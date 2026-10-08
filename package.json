@@ -46,7 +46,7 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "npm run build && tsc --noEmit",
     "test": "npm run build && vitest run",
     "prepack": "rm -rf dist && npm run build"
   },
