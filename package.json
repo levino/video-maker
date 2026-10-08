@@ -1,0 +1,48 @@
+{
+  "name": "@levino/video-maker",
+  "version": "0.1.0",
+  "description": "Webseiten Bild für Bild als MP4 rendern – Playwright/Chromium und ffmpeg",
+  "license": "MIT",
+  "author": "Levin Keller",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/levino/video-maker.git"
+  },
+  "type": "module",
+  "bin": {
+    "video-maker": "dist/cli.js"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./kit": {
+      "types": "./dist/kit/index.d.ts",
+      "default": "./dist/kit/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit",
+    "test": "npm run build && vitest run"
+  },
+  "dependencies": {
+    "playwright": "1.64.0"
+  },
+  "optionalDependencies": {
+    "ffmpeg-static": "5.3.0"
+  },
+  "devDependencies": {
+    "@types/node": "26.6.4",
+    "ffprobe-static": "3.1.0",
+    "typescript": "7.0.2",
+    "vitest": "5.0.3"
+  }
+}
