@@ -68,7 +68,13 @@ export function resolveTime(ref: TimeRef, ctx: TimeContext, path: string, issues
     }
     case 'word': {
       if (!ctx.word) return fail(`"${base}" needs a script in this scene.`, 'Add "script" to the scene or use seconds.')
-      const t = ctx.word(arg)
+      let t = ctx.word(arg)
+      // unquoted word with offset: "word:Kredit+10f"
+      const o = quoted ? null : offsetRe.exec(arg)
+      if (t === undefined && o && o.index > 0) {
+        t = ctx.word(arg.slice(0, o.index).trim())
+        if (t !== undefined) return t + seconds(o[1], o[2], ctx.fps)
+      }
       if (t === undefined) return fail(`"${arg}" does not occur in the script.`, `Use a word sequence copied from the script${ctx.scriptHint ? `: "${ctx.scriptHint}"` : ''}.`)
       return t + offset
     }

@@ -77,6 +77,7 @@ describe('time references', () => {
     expect(t('sentence:2+0.5')[0]).toBe(3.5)
     expect(t('word:Brücke')[0]).toBe(4.2)
     expect(t('word:"Brücke"-6f')[0]).toBeCloseTo(4.0)
+    expect(t('word:Brücke+0.3')[0]).toBeCloseTo(4.5)
     expect(t('scene:b.end')[0]).toBe(20)
   })
 
