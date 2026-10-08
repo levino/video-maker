@@ -1,5 +1,5 @@
-export { ease, cubicBezier, steps, type EaseFn } from './easing.js'
+export { ease, cubicBezier, steps, spring, parseSpring, type EaseFn, type SpringOptions } from './easing.js'
 export { mapRange, progress, mix, mixColor, random, type MapOptions } from './range.js'
 export { sceneAt, sequence, totalLength, activeAt, fade, crossfade, type Span, type SceneState } from './scenes.js'
-export { captionAt, spreadCues, splitText, splitSentences, timeCues, parseSubtitles, type Cue } from './captions.js'
+export { captionAt, spreadCues, splitText, splitSentences, timeCues, parseSubtitles, type Cue, type Pause } from './captions.js'
 export { defineVideo, type VideoDefinition, type FrameInfo } from './define.js'

@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { resolve } from 'node:path'
 import { parseArgs } from 'node:util'
 import { check, renderVideo, sheet, still, validate } from './api.js'
 import { parseAudioSpec } from './audio.js'
@@ -175,7 +176,14 @@ async function main() {
     }
     case 'preview': {
       needInput()
-      const server = await startPreview({ input, root: values.root, format: values.format?.[0], ffmpegPath: values.ffmpeg, ...common.html })
+      const server = await startPreview({
+        input,
+        root: values.root,
+        format: values.format?.[0],
+        ffmpegPath: values.ffmpeg,
+        audio: values.audio?.map(parseAudioSpec).map((t) => ({ ...t, file: resolve(t.file) })),
+        ...common.html,
+      })
       return print({ ok: true, url: server.url }, `Vorschau: ${server.url}  (Strg+C beendet)`)
     }
     case 'mcp': {

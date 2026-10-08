@@ -46,6 +46,39 @@ export function cubicBezier(x1: number, y1: number, x2: number, y2: number): Eas
   }
 }
 
+export interface SpringOptions {
+  damping?: number
+  stiffness?: number
+  mass?: number
+}
+
+/**
+ * Damped spring released at t = 0 from 0 towards 1 without initial velocity (t in seconds).
+ * Defaults: damping 10, stiffness 100, mass 1 (slight overshoot, settles after about a second).
+ */
+export function spring(t: number, options: SpringOptions = {}): number {
+  if (t <= 0) return 0
+  const { damping = 10, stiffness = 100, mass = 1 } = options
+  const w0 = Math.sqrt(stiffness / mass)
+  const zeta = damping / (2 * Math.sqrt(stiffness * mass))
+  if (zeta < 1) {
+    const wd = w0 * Math.sqrt(1 - zeta * zeta)
+    return 1 - Math.exp(-zeta * w0 * t) * (Math.cos(wd * t) + ((zeta * w0) / wd) * Math.sin(wd * t))
+  }
+  if (zeta === 1) return 1 - Math.exp(-w0 * t) * (1 + w0 * t)
+  const r1 = -w0 * (zeta - Math.sqrt(zeta * zeta - 1))
+  const r2 = -w0 * (zeta + Math.sqrt(zeta * zeta - 1))
+  return 1 - (r2 * Math.exp(r1 * t) - r1 * Math.exp(r2 * t)) / (r2 - r1)
+}
+
+/** Parse "spring" or "spring(damping, stiffness, mass)". */
+export function parseSpring(name: string): SpringOptions | undefined {
+  const m = /^spring(?:\(\s*([\d.]+)?\s*(?:,\s*([\d.]+)\s*)?(?:,\s*([\d.]+)\s*)?\))?$/.exec(name.trim())
+  if (!m) return undefined
+  const [, damping, stiffness, mass] = m
+  return { damping: damping ? Number(damping) : undefined, stiffness: stiffness ? Number(stiffness) : undefined, mass: mass ? Number(mass) : undefined }
+}
+
 /** Staircase easing with n equal steps, value jumps at the end of each step. */
 export const steps =
   (n: number): EaseFn =>

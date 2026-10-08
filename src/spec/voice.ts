@@ -5,8 +5,8 @@ import { resolveFfmpeg } from '../ffmpeg.js'
 export interface AudioInfo {
   /** Seconds. */
   duration: number
-  /** Middle of each silence between speech, seconds (leading/trailing silence excluded). */
-  pauses: number[]
+  /** Silences between speech: middle and length, seconds (leading/trailing silence excluded). */
+  pauses: { at: number; length: number }[]
 }
 
 const cache = new Map<string, Promise<AudioInfo>>()
@@ -37,11 +37,12 @@ export function analyzeAudio(file: string, ffmpegPath?: string): Promise<AudioIn
         }
         const starts = [...log.matchAll(/silence_start: (-?[\d.]+)/g)].map((m) => Number(m[1]))
         const ends = [...log.matchAll(/silence_end: ([\d.]+)/g)].map((m) => Number(m[1]))
-        const pauses: number[] = []
+        const round = (n: number) => Math.round(n * 1000) / 1000
+        const pauses: AudioInfo['pauses'] = []
         starts.forEach((start, i) => {
           const end = ends[i] ?? duration
           if (start <= 0.05 || end >= duration - 0.05) return
-          pauses.push(Math.round(((start + end) / 2) * 1000) / 1000)
+          pauses.push({ at: round((start + end) / 2), length: round(end - start) })
         })
         resolve({ duration: Math.round(duration * 1000) / 1000, pauses })
       })

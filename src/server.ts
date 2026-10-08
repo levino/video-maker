@@ -47,7 +47,7 @@ export interface StaticServer {
 export interface ServeOptions {
   root: string
   /** Generated responses by exact path. */
-  routes?: Record<string, { type: string; body: string | (() => string) }>
+  routes?: Record<string, { type: string; body?: string | (() => string); file?: string }>
   /** Inject the runtime into served HTML (needed when no Playwright init script runs, i.e. preview). */
   inject?: RuntimeOptions
 }
@@ -61,8 +61,12 @@ export async function serve(options: ServeOptions): Promise<StaticServer> {
     try {
       const path = decodeURIComponent(new URL(req.url ?? '/', 'http://x').pathname)
       const route = options.routes?.[path]
+      if (route?.file) {
+        res.writeHead(200, { 'content-type': route.type, 'cache-control': 'no-store' })
+        return createReadStream(route.file).pipe(res)
+      }
       if (route) {
-        let body = typeof route.body === 'function' ? route.body() : route.body
+        let body = (typeof route.body === 'function' ? route.body() : route.body) ?? ''
         if (options.inject && route.type.startsWith('text/html') && !path.endsWith('/preview')) body = inject(body, options.inject)
         res.writeHead(200, { 'content-type': route.type, 'cache-control': 'no-store' })
         return res.end(body)

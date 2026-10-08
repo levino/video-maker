@@ -2,12 +2,14 @@
 
 const timeRef = {
   description:
-    'Seconds (number) or reference: "2.5s", "45f", "start", "end", "voice", "voiceEnd", "sentence:N", "word:<text>", globally "scene:<id>", "scene:<id>.end"; optional offset "+0.5", "-10f".',
+    'Seconds (number) or reference: "2.5s", "45f", "start", "end", "voice", "voiceEnd", "sentence:N", "word:<text>", globally "scene:<id>", "scene:<id>.end"; optional offset "+0.5", "-10f"; expressions with + - * / ( ), mix(a, b, t), min(…), max(…), e.g. "mix(sentence:2, sentence:3, 0.3)".',
   type: ['number', 'string'],
 }
 const length = { description: 'Pixels (number) or percent of the frame: "50%".', type: ['number', 'string'] }
+const span = { anyOf: [{ type: 'number', minimum: 0 }, { type: 'string', pattern: '^\\d+(\\.\\d+)?\\s*(s|f|ms)?$' }] }
 const ease = {
-  description: 'Easing: linear, in, out, inOut (cubic), inQuad, outQuad, inOutQuad, inCubic, outCubic, inOutCubic, inSine, outSine, inOutSine, inExpo, outExpo, inOutExpo, inBack, outBack, spring.',
+  description:
+    'Easing: linear, in, out, inOut (cubic), inQuad, outQuad, inOutQuad, inCubic, outCubic, inOutCubic, inSine, outSine, inOutSine, inExpo, outExpo, inOutExpo, inBack, outBack, or a physical spring "spring" / "spring(damping, stiffness, mass)" (default 10, 100, 1) that runs in real time and keeps swinging after the last keyframe.',
   type: 'string',
 }
 const color = { description: 'CSS color or a name from theme.colors.', type: 'string' }
@@ -30,7 +32,7 @@ const motion = {
       type: 'object',
       additionalProperties: false,
       required: ['type'],
-      properties: { type: motionType, duration: { type: 'number', minimum: 0, description: 'Seconds (default 0.4).' }, ease, distance: { type: 'number' } },
+      properties: { type: motionType, duration: { ...span, description: 'Seconds or "12f" (default 0.4).' }, ease, distance: { type: 'number' } },
     },
   ],
 }
@@ -65,7 +67,10 @@ const layerBase = {
   y: length,
   width: length,
   height: length,
-  anchor: { ...placement, description: 'Point of the layer placed at x/y (default top-left).' },
+  anchor: {
+    enum: [...placement.enum, 'baseline', 'baseline-left', 'baseline-right'],
+    description: 'Point of the layer placed at x/y (default top-left). baseline*: the first text baseline sits at y (like SVG text).',
+  },
   place: { ...placement, description: 'Place inside the safe area (overrides x/y/anchor).' },
   rotate: { type: 'number', description: 'Degrees.' },
   scale: { type: 'number' },
@@ -115,18 +120,18 @@ const transition = {
       required: ['type'],
       properties: {
         type: transitionType,
-        duration: { type: 'number', minimum: 0, description: 'Seconds (default 0.3).' },
+        duration: { ...span, description: 'Seconds or "8f" (default 0.3).' },
         overlap: { type: 'boolean', description: 'Cross-fade over the previous scene instead of fading in from the background.' },
       },
     },
   ],
 }
 const voiceProps = {
-  lead: { type: 'number', minimum: 0, description: 'Seconds before the voice starts (default 0.25).' },
-  tail: { type: 'number', minimum: 0, description: 'Seconds after the voice ends (default 0.6).' },
+  lead: { ...span, description: 'Seconds (or "8f") before the voice starts (default 0.25).' },
+  tail: { ...span, description: 'Seconds (or "8f") after the voice ends (default 0.6).' },
   volume: { type: 'number', minimum: 0 },
-  fadeIn: { type: 'number', minimum: 0 },
-  fadeOut: { type: 'number', minimum: 0 },
+  fadeIn: { ...span, description: 'Seconds or "1f" (default 0).' },
+  fadeOut: { ...span, description: 'Seconds or "4f" (default 0.1).' },
   pauses: {
     description: 'Pause positions in the file (seconds) for caption timing; "detect" (default) finds them with ffmpeg; "none".',
     anyOf: [{ type: 'array', items: { type: 'number' } }, { enum: ['detect', 'none'] }],
@@ -148,7 +153,30 @@ export const schema = {
       required: ['type'],
       discriminator: { propertyName: 'type' },
       oneOf: [
-        layer('text', ['text'], { text: { type: 'string', description: 'Line breaks with \\n.' }, style: styleRef }, 'Text block. Wraps inside width.'),
+        layer(
+          'text',
+          ['text'],
+          {
+            text: { type: 'string', description: 'Line breaks with \\n.' },
+            style: styleRef,
+            split: { enum: ['chars', 'words'], description: 'Run the enter motion per character or word.' },
+            stagger: { type: 'number', minimum: 0, description: 'Seconds between characters/words (with split).' },
+          },
+          'Text block. Wraps inside width.',
+        ),
+        layer(
+          'qr',
+          ['data'],
+          {
+            data: { type: 'string', description: 'Content, e.g. a URL.' },
+            color: color,
+            background: color,
+            margin: { type: 'integer', minimum: 0, description: 'Quiet zone in modules (default 4).' },
+            level: { enum: ['L', 'M', 'Q', 'H'], description: 'Error correction (default M).' },
+            radius: { type: 'number', minimum: 0, description: 'Corner radius of the background.' },
+          },
+          'QR code, square, size from width (or height).',
+        ),
         layer(
           'counter',
           ['to'],
@@ -197,6 +225,11 @@ export const schema = {
             module: { type: 'string', description: 'ES module path; default export (element, props, context) => (t, info) => void.' },
             props: { type: 'object' },
             times: { type: 'object', description: 'Named time references, resolved to seconds from scene start and passed as context.times.', additionalProperties: timeRef },
+            params: {
+              type: 'object',
+              description: 'Named numbers or keyframes, evaluated every frame and passed to update(t, info) as info.params.',
+              additionalProperties: { anyOf: [{ type: 'number' }, keyframes] },
+            },
           },
           'Escape hatch: own HTML/SVG/JS drawn by a module, updated every frame with scene time t (seconds).',
         ),
@@ -206,6 +239,7 @@ export const schema = {
   },
   properties: {
     $schema: { type: 'string' },
+    templates: { type: 'object', description: 'Ignored. Space for YAML anchors (&name) that are reused elsewhere with *name or <<: *name.' },
     fps: { type: 'number', exclusiveMinimum: 0, description: 'Frames per second (default 30).' },
     formats: {
       type: 'object',

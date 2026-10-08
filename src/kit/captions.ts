@@ -4,6 +4,12 @@ export interface Cue {
   text: string
 }
 
+/** A speech pause: middle of the silence and, if known, its length (seconds). */
+export interface Pause {
+  at: number
+  length?: number
+}
+
 /** The cue visible at time t (start <= t < end), or undefined. Cues may be unsorted. */
 export function captionAt(cues: readonly Cue[], t: number): Cue | undefined {
   let hit: Cue | undefined
@@ -74,25 +80,31 @@ export function splitText(text: string, maxLength = 60): string[] {
  * Time caption pieces over a spoken passage of `duration` seconds: proportional to their length,
  * each boundary moved to the nearest measured pause (seconds) within `snap` seconds.
  */
-export function timeCues(pieces: readonly string[], duration: number, pauses: readonly number[] = [], snap = 1.5): Cue[] {
+export function timeCues(pieces: readonly string[], duration: number, pauses: readonly (number | Pause)[] = [], snap = 1.5): Cue[] {
   const weights = pieces.map((p) => p.length + 10)
   const total = weights.reduce((a, b) => a + b, 0)
   // estimated boundaries between pieces
   const estimates: number[] = []
   let sum = 0
   for (let i = 0; i < pieces.length - 1; i++) estimates.push(((sum += weights[i]) / total) * duration)
-  // each pause belongs to the boundary whose estimate is closest; each boundary takes its closest pause
-  const chosen: (number | undefined)[] = estimates.map(() => undefined)
-  for (const p of pauses) {
-    if (p <= 0.3 || p >= duration - 0.3) continue
+  // A sentence end needs a real pause (≥ 0.3 s when the length is known); pauses after commas or
+  // colons are shorter. Each pause belongs to the closest eligible boundary; a boundary prefers the
+  // candidate with the best score (distance minus pause length, so longer pauses win).
+  const sentenceEnd = pieces.map((p) => /[.!?…]["“”»«']?$/.test(p.trim()))
+  const score = (p: Pause, i: number) => Math.abs(p.at - estimates[i]) - (p.length ?? 0)
+  const chosen: (Pause | undefined)[] = estimates.map(() => undefined)
+  for (const raw of pauses) {
+    const p: Pause = typeof raw === 'number' ? { at: raw } : raw
+    if (p.at <= 0.3 || p.at >= duration - 0.3) continue
     let nearest = -1
     estimates.forEach((e, i) => {
-      if (Math.abs(p - e) <= snap && (nearest < 0 || Math.abs(p - e) < Math.abs(p - estimates[nearest]))) nearest = i
+      if (sentenceEnd[i] && p.length !== undefined && p.length < 0.3) return
+      if (Math.abs(p.at - e) <= snap && (nearest < 0 || Math.abs(p.at - e) < Math.abs(p.at - estimates[nearest]))) nearest = i
     })
-    if (nearest >= 0 && (chosen[nearest] === undefined || Math.abs(p - estimates[nearest]) < Math.abs(chosen[nearest]! - estimates[nearest]))) chosen[nearest] = p
+    if (nearest >= 0 && (chosen[nearest] === undefined || score(p, nearest) < score(chosen[nearest]!, nearest))) chosen[nearest] = p
   }
   const bounds = [0]
-  estimates.forEach((e, i) => bounds.push(Math.min(Math.max(chosen[i] ?? e, bounds[i] + 0.4), duration)))
+  estimates.forEach((e, i) => bounds.push(Math.min(Math.max(chosen[i]?.at ?? e, bounds[i] + 0.4), duration)))
   bounds.push(duration)
   return pieces.map((text, i) => ({ start: bounds[i], end: bounds[i + 1], text }))
 }

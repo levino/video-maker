@@ -23,10 +23,96 @@ function seconds(value: string, unit: string | undefined, fps: number) {
   return unit === 'f' ? n / fps : unit === 'ms' ? n / 1000 : n
 }
 
+/**
+ * Expressions over time references: + - * / ( ), mix(a, b, t) = a + (b - a) · t, min(…), max(…).
+ * Example: "mix(sentence:2, sentence:3, 0.3)", "(voiceEnd - voice) / 2". Words with spaces need quotes.
+ */
+function evaluate(text: string, ctx: TimeContext, path: string, issues: Issue[]): number {
+  let pos = 0
+  const fail = (message: string): never => {
+    throw Object.assign(new Error(message), { expression: true })
+  }
+  const skip = () => {
+    while (text[pos] === ' ') pos++
+  }
+  const peek = () => (skip(), text[pos])
+  const expect = (ch: string) => (peek() === ch ? pos++ : fail(`expected "${ch}" at position ${pos + 1}`))
+  const atom = (): number => {
+    const c = peek()
+    if (c === '(') {
+      pos++
+      const v = sum()
+      expect(')')
+      return v
+    }
+    if (c === '-') {
+      pos++
+      return -atom()
+    }
+    const fn = /^(mix|min|max)\s*\(/.exec(text.slice(pos))
+    if (fn) {
+      pos += fn[0].length
+      const args = [sum()]
+      while (peek() === ',') {
+        pos++
+        args.push(sum())
+      }
+      expect(')')
+      if (fn[1] === 'mix') {
+        if (args.length !== 3) fail('mix(a, b, t) needs three arguments')
+        return args[0] + (args[1] - args[0]) * args[2]
+      }
+      return fn[1] === 'min' ? Math.min(...args) : Math.max(...args)
+    }
+    // a single reference or number: up to the next operator outside quotes
+    const m = /^(word:\s*"[^"]*"|[^\s+\-*/(),][^\s+*/(),]*?)(?=\s*(?:[+*/(),]|-(?=[\s\d.(])|$))/.exec(text.slice(pos))
+    if (!m) fail(`cannot read a time at position ${pos + 1}`)
+    pos += m![0].length
+    const sub: Issue[] = []
+    const v = resolveTime(m![1], ctx, path, sub)
+    if (sub.length) fail(sub[0].message)
+    return v
+  }
+  const product = (): number => {
+    let v = atom()
+    for (let c = peek(); c === '*' || c === '/'; c = peek()) {
+      pos++
+      v = c === '*' ? v * atom() : v / atom()
+    }
+    return v
+  }
+  const sum = (): number => {
+    let v = product()
+    for (let c = peek(); c === '+' || c === '-'; c = peek()) {
+      pos++
+      v = c === '+' ? v + product() : v - product()
+    }
+    return v
+  }
+  try {
+    const v = sum()
+    if (peek() !== undefined) fail(`unexpected "${text.slice(pos)}"`)
+    return v
+  } catch (e) {
+    if (!(e as { expression?: boolean }).expression) throw e
+    issues.push({
+      code: 'invalid-time',
+      severity: 'error',
+      path,
+      message: `Cannot evaluate "${text}": ${(e as Error).message}.`,
+      hint: 'Expressions: + - * / ( ), mix(a, b, t), min(…), max(…) over references like sentence:2 or word:"zwei Wörter".',
+    })
+    return 0
+  }
+}
+
+const isExpression = (text: string) => /[()*/,]/.test(text.replace(/word:\s*"[^"]*"/g, ''))
+
 /** Resolve a time reference to seconds; pushes an issue and returns 0 when it cannot. */
 export function resolveTime(ref: TimeRef, ctx: TimeContext, path: string, issues: Issue[]): number {
   if (typeof ref === 'number') return ref
   let text = ref.trim()
+  if (isExpression(text)) return evaluate(text, ctx, path, issues)
   const plain = /^(\d+(?:\.\d+)?)\s*(s|f|ms)?$/.exec(text)
   if (plain) return seconds(plain[1], plain[2], ctx.fps)
 
@@ -69,7 +155,7 @@ export function resolveTime(ref: TimeRef, ctx: TimeContext, path: string, issues
     case 'word': {
       if (!ctx.word) return fail(`"${base}" needs a script in this scene.`, 'Add "script" to the scene or use seconds.')
       let t = ctx.word(arg)
-      // unquoted word with offset: "word:Kredit+10f"
+      // unquoted word with offset: "word:Brücke+10f"
       const o = quoted ? null : offsetRe.exec(arg)
       if (t === undefined && o && o.index > 0) {
         t = ctx.word(arg.slice(0, o.index).trim())

@@ -1,14 +1,28 @@
 {
   "name": "@levino/video-maker",
   "version": "0.1.0",
-  "description": "Webseiten Bild für Bild als MP4 rendern – Playwright/Chromium und ffmpeg",
+  "description": "Videos aus einer deklarativen Beschreibung (YAML/JSON) oder einer Webseite rendern – für KI-Agenten gebaut: Playwright/Chromium, ffmpeg, MCP",
+  "keywords": [
+    "video",
+    "render",
+    "mp4",
+    "playwright",
+    "ffmpeg",
+    "declarative",
+    "mcp",
+    "captions"
+  ],
   "license": "MIT",
   "author": "Levin Keller",
+  "homepage": "https://github.com/levino/video-maker#readme",
+  "bugs": "https://github.com/levino/video-maker/issues",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/levino/video-maker.git"
   },
   "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
   "bin": {
     "video-maker": "dist/cli.js",
     "video-maker-mcp": "dist/mcp.js"
@@ -24,7 +38,8 @@
     }
   },
   "files": [
-    "dist"
+    "dist",
+    "CHANGELOG.md"
   ],
   "engines": {
     "node": ">=20"
@@ -32,11 +47,13 @@
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc --noEmit",
-    "test": "npm run build && vitest run"
+    "test": "npm run build && vitest run",
+    "prepack": "rm -rf dist && npm run build"
   },
   "dependencies": {
     "ajv": "8.20.0",
     "playwright": "1.64.0",
+    "qrcode": "1.5.4",
     "yaml": "2.9.1"
   },
   "optionalDependencies": {
@@ -44,6 +61,7 @@
   },
   "devDependencies": {
     "@types/node": "26.6.4",
+    "@types/qrcode": "1.5.6",
     "ffprobe-static": "3.1.0",
     "typescript": "7.0.2",
     "vitest": "5.0.3"

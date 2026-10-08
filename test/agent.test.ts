@@ -126,6 +126,54 @@ describe('video description', () => {
   }, 60_000)
 })
 
+describe('building blocks in the browser', () => {
+  it('baseline anchor, QR code, custom params and per-character enter', async () => {
+    writeFileSync(join(dir, 'balken.js'), 'export default (el) => { el.style.background = "#00ff00"; return (t, info) => { el.style.width = info.params.breite + "px" } }')
+    const spec = join(dir, 'bausteine.yaml')
+    writeFileSync(
+      spec,
+      `fps: 10
+formats: { a: { width: 320, height: 180 } }
+theme: { background: "#ffffff", text: { color: "#000000", size: 40, lineHeight: 2 } }
+scenes:
+  - id: s
+    duration: 2
+    layers:
+      - { type: text, text: "HHH", x: 10, y: 100, anchor: baseline-left }
+      - { type: qr, data: "https://example.org", x: 200, y: 10, width: 66, margin: 0 }
+      - { type: custom, module: balken.js, x: 0, y: 150, height: 10, params: { breite: [[0, 0], [1, 100]] } }
+      - { type: text, text: "AB", x: 10, y: 110, split: chars, stagger: 0.5, enter: { type: fade, duration: 1f } }
+`,
+    )
+    const png = join(dir, 'bausteine.png')
+    expect(run('still', spec, '--time', '0.5', '--out', png).code).toBe(0)
+    // the glyphs of "HHH" end on the baseline: ink just above y = 100, none just below
+    expect(pixel(png, 15, 97, 320)[0]).toBeLessThan(100)
+    expect(pixel(png, 15, 103, 320)[0]).toBeGreaterThan(200)
+    // QR finder pattern: dark module in the top-left corner
+    expect(pixel(png, 202, 12, 320)[0]).toBeLessThan(80)
+    // custom params: 50 px wide at t = 0.5 s
+    expect(pixel(png, 45, 155, 320)).toEqual([0, 255, 0])
+    expect(pixel(png, 55, 155, 320)).toEqual([255, 255, 255])
+  }, 60_000)
+
+  it('preview serves the audio tracks of a description', async () => {
+    const { startPreview } = await import('../dist/index.js')
+    const server = await startPreview({ input: good })
+    try {
+      const base = server.url.replace('/__video-maker/preview', '')
+      const tracks = await (await fetch(`${base}/__video-maker/audio.json`)).json()
+      expect(tracks).toHaveLength(1)
+      expect(tracks[0]).toMatchObject({ start: 0.2, url: '/__video-maker/audio/0' })
+      const audio = await fetch(base + tracks[0].url)
+      expect(audio.headers.get('content-type')).toBe('audio/wav')
+      expect((await audio.arrayBuffer()).byteLength).toBeGreaterThan(1000)
+    } finally {
+      await server.close()
+    }
+  }, 60_000)
+})
+
 describe('CLI contract', () => {
   it('exit codes and JSON errors', () => {
     const invalid = join(dir, 'ungueltig.json')

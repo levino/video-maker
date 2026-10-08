@@ -80,13 +80,33 @@ export function frameAt(compiled: Compiled, ref: TimeRef): number {
 // --- rendering with per-scene cache ----------------------------------------------------------
 
 const fileHashes = new Map<string, string>()
-function hashFile(file: string): string {
+
+/** Relative imports of an ES module: static, re-exports and dynamic import('…') with a literal. */
+export function moduleImports(file: string, source: string): string[] {
+  const found = new Set<string>()
+  const re = /(?:\bfrom\s*|\bimport\s*\(\s*|\bimport\s+)(['"])(\.{1,2}\/[^'"]+)\1/g
+  for (const m of source.matchAll(re)) found.add(resolve(dirname(file), m[2]))
+  return [...found]
+}
+
+/** Content hash; for JavaScript modules including everything they import (recursively). */
+export function hashFile(file: string, seen = new Set<string>()): string {
   const { mtimeMs, size } = statSync(file)
   const key = `${file}:${mtimeMs}:${size}`
   let h = fileHashes.get(key)
   if (!h) {
-    h = createHash('sha256').update(readFileSync(file)).digest('hex')
-    fileHashes.set(key, h)
+    const content = readFileSync(file)
+    const hash = createHash('sha256').update(content)
+    if (/\.(m?js)$/.test(file)) {
+      seen.add(file)
+      for (const dep of moduleImports(file, content.toString('utf8'))) {
+        if (seen.has(dep)) continue
+        hash.update(existsSync(dep) ? `${dep}:${hashFile(dep, seen)}` : `${dep}:missing`)
+      }
+    }
+    h = hash.digest('hex')
+    // a module's hash depends on its imports, which may change independently: cache only plain files
+    if (!/\.(m?js)$/.test(file)) fileHashes.set(key, h)
   }
   return h
 }
@@ -159,14 +179,14 @@ export async function renderSpec(options: SpecRenderOptions): Promise<SpecRender
           enc: { ...enc, quality: options.quality ?? 95 },
           fonts: plan.fonts,
           overlays: plan.overlays,
-          globalFiles: compiled.files.global.map(hashFile),
+          globalFiles: compiled.files.global.map((f) => hashFile(f)),
         }
         const segments: string[] = []
         for (const [i, scene] of plan.scenes.entries()) {
           const from = scene.start
           const to = i + 1 < plan.scenes.length ? plan.scenes[i + 1].start : plan.frames
           if (to <= from) continue
-          const involved = plan.scenes.flatMap((s, j) => (s.start < to && s.start + s.frames > from ? [{ s, files: compiled.files.scenes[j].map(hashFile) }] : []))
+          const involved = plan.scenes.flatMap((s, j) => (s.start < to && s.start + s.frames > from ? [{ s, files: compiled.files.scenes[j].map((f) => hashFile(f)) }] : []))
           const cues = plan.captions.cues.filter((c) => c.start < to && c.end > from)
           const key = createHash('sha256').update(JSON.stringify({ shared, from, to, captions: { ...plan.captions, cues }, involved })).digest('hex').slice(0, 32)
           const segment = join(cacheDir, `${key}.mp4`)

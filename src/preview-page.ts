@@ -62,20 +62,68 @@ export function previewPage(page: string): string {
     busy = false
   }
   slider.addEventListener('input', () => show(Number(slider.value)))
+
+  // Sound: all tracks decoded once, scheduled on the audio clock from the current position.
+  const tracks = await (await fetch('/__video-maker/audio.json')).json()
+  let audio, buffers, sources = []
+  async function startSound(t0) {
+    if (!tracks.length) return null
+    audio ??= new AudioContext()
+    await audio.resume()
+    buffers ??= await Promise.all(tracks.map(async (t) => audio.decodeAudioData(await (await fetch(t.url)).arrayBuffer())))
+    const now = audio.currentTime + 0.05
+    tracks.forEach((t, i) => {
+      const start = t.start ?? 0
+      const length = t.duration ?? buffers[i].duration - (t.offset ?? 0)
+      const skip = Math.max(0, t0 - start)
+      if (skip >= length) return
+      const gain = audio.createGain()
+      // envelope [[videoSeconds, gain], …], fades relative to the track
+      const at = (videoTime) => now + videoTime - t0
+      if (Array.isArray(t.volume)) {
+        const v = (x) => { const k = t.volume; if (x <= k[0][0]) return k[0][1]; for (let j = 1; j < k.length; j++) if (x < k[j][0]) return k[j-1][1] + (k[j][1] - k[j-1][1]) * (x - k[j-1][0]) / (k[j][0] - k[j-1][0]); return k[k.length-1][1] }
+        gain.gain.setValueAtTime(v(t0), now)
+        for (const [x, g] of t.volume) if (x > t0) gain.gain.linearRampToValueAtTime(g, at(x))
+      } else gain.gain.setValueAtTime(t.volume ?? 1, now)
+      const fade = audio.createGain()
+      fade.gain.setValueAtTime(1, now)
+      if (t.fadeIn && skip < t.fadeIn) { fade.gain.setValueAtTime(skip / t.fadeIn, now); fade.gain.linearRampToValueAtTime(1, at(start + t.fadeIn)) }
+      if (t.fadeOut) { fade.gain.setValueAtTime(1, Math.max(now, at(start + length - t.fadeOut))); fade.gain.linearRampToValueAtTime(0, at(start + length)) }
+      const src = audio.createBufferSource()
+      src.buffer = buffers[i]
+      src.connect(gain).connect(fade).connect(audio.destination)
+      src.start(Math.max(now, at(start)), (t.offset ?? 0) + skip, length - skip)
+      sources.push(src)
+    })
+    return now
+  }
+  function stopSound() {
+    for (const s of sources) try { s.stop() } catch {}
+    sources = []
+  }
+
   play.addEventListener('click', async () => {
     playing = !playing
     play.textContent = playing ? '⏸' : '▶'
-    let last = performance.now()
-    let frame = Number(slider.value)
+    if (!playing) return stopSound()
+    const t0 = Number(slider.value) / meta.fps
+    const soundStart = await startSound(t0)
+    const wallStart = performance.now()
+    // the audio clock (or the wall clock without sound) decides which frame is due
+    const elapsed = () => (soundStart !== null ? audio.currentTime - soundStart : (performance.now() - wallStart) / 1000)
     while (playing) {
+      const frame = Math.round((t0 + Math.max(0, elapsed())) * meta.fps)
+      if (frame >= meta.frames) {
+        playing = false
+        play.textContent = '▶'
+        stopSound()
+        break
+      }
       await show(frame)
-      const now = performance.now()
-      frame += Math.max(1, Math.round(((now - last) / 1000) * meta.fps))
-      last = now
-      if (frame >= meta.frames) frame = 0
       await new Promise((r) => requestAnimationFrame(r))
     }
   })
+  slider.addEventListener('pointerdown', () => { if (playing) play.click() })
   show(0)
 </script>
 </body>

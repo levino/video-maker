@@ -1,8 +1,9 @@
 import { existsSync, readdirSync, readFileSync } from 'node:fs'
 import { basename, dirname, isAbsolute, relative, resolve, sep } from 'node:path'
+import QRCode from 'qrcode'
 import type { AudioTrack } from '../audio.js'
 import { closest, type Issue } from '../errors.js'
-import { parseSubtitles, splitSentences, splitText, timeCues } from '../kit/captions.js'
+import { parseSubtitles, splitSentences, splitText, timeCues, type Pause } from '../kit/captions.js'
 import { validateLayer } from './load.js'
 import type { Css, Plan, PlanCue, PlanKey, PlanLayer, PlanMotion, PlanScene } from './plan.js'
 import { resolveTime, type TimeContext } from './time.js'
@@ -38,6 +39,17 @@ const anchors: Record<Placement, [number, number]> = {
 
 const isObject = (v: unknown): v is Record<string, any> => typeof v === 'object' && v !== null && !Array.isArray(v)
 
+/** QR code as SVG markup: one path for all dark modules on a (rounded) background. */
+export function qrSvg(data: string, o: { color: string; background: string; margin: number; level: 'L' | 'M' | 'Q' | 'H'; radius: number }): string {
+  const code = QRCode.create(data, { errorCorrectionLevel: o.level })
+  const n = code.modules.size
+  const total = n + 2 * o.margin
+  let d = ''
+  for (let row = 0; row < n; row++)
+    for (let col = 0; col < n; col++) if (code.modules.get(row, col)) d += `M${col + o.margin} ${row + o.margin}h1v1h-1z`
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${total} ${total}" shape-rendering="crispEdges"><rect width="${total}" height="${total}" rx="${(o.radius * total) / 100}" fill="${o.background}"/><path d="${d}" fill="${o.color}"/></svg>`
+}
+
 /** Deep merge: objects merge, everything else (arrays too) is replaced. */
 export function merge<T>(base: T, override: unknown): T {
   if (!isObject(base) || !isObject(override)) return (override === undefined ? base : override) as T
@@ -64,6 +76,13 @@ export async function compile(spec: VideoSpec, specFile: string, format: string,
   const safeFraction = theme.safeArea ?? 0.05
   const safe = { x: Math.round(W * safeFraction), y: Math.round(H * safeFraction) }
   const toFrames = (s: number) => Math.round(s * fps)
+  /** A duration: seconds, or "12f", "0.4s", "250ms". */
+  const spanSeconds = (v: number | string | undefined, fallback: number) => {
+    if (v === undefined) return fallback
+    if (typeof v === 'number') return v
+    const m = /^(\d+(?:\.\d+)?)\s*(s|f|ms)?$/.exec(v.trim())!
+    return m[2] === 'f' ? Number(m[1]) / fps : m[2] === 'ms' ? Number(m[1]) / 1000 : Number(m[1])
+  }
   const color = (c: string | undefined) => (c === undefined ? undefined : (theme.colors?.[c] ?? c))
   const globalFiles = new Set<string>()
   let sceneFiles = new Set<string>()
@@ -139,7 +158,7 @@ export async function compile(spec: VideoSpec, specFile: string, format: string,
     if (m === undefined || m === 'none') return undefined
     const o = typeof m === 'string' ? { type: m } : m
     if (o.type === 'none') return undefined
-    return { type: o.type, frames: Math.max(1, toFrames(o.duration ?? 0.4)), ease: o.ease ?? (o.type === 'pop' ? 'outBack' : 'outCubic'), distance: o.distance ?? 60 }
+    return { type: o.type, frames: Math.max(1, toFrames(spanSeconds(o.duration, 0.4))), ease: o.ease ?? (o.type === 'pop' ? 'outBack' : 'outCubic'), distance: o.distance ?? 60 }
   }
   const keyframes = (keys: Keyframe[], ctx: TimeContext, path: string): PlanKey[] =>
     keys
@@ -176,8 +195,9 @@ export async function compile(spec: VideoSpec, specFile: string, format: string,
 
     let x = length(l.x, W, `${path}/x`) ?? 0
     let y = length(l.y, H, `${path}/y`) ?? 0
-    let anchor = anchors[l.anchor ?? 'top-left']
-    let width = length(l.width, W, `${path}/width`)
+    const baseline = l.anchor?.startsWith('baseline') ?? false
+    let anchor = baseline ? anchors[(l.anchor === 'baseline' ? 'top' : l.anchor!.replace('baseline', 'top')) as Placement] : anchors[(l.anchor ?? 'top-left') as Placement]
+    const width = length(l.width, W, `${path}/width`)
     const height = length(l.height, H, `${path}/height`)
     if (l.place) {
       anchor = anchors[l.place]
@@ -195,6 +215,7 @@ export async function compile(spec: VideoSpec, specFile: string, format: string,
       width,
       height,
       anchor,
+      ...(baseline ? { baseline } : {}),
       rotate: l.rotate ?? 0,
       scale: l.scale ?? 1,
       opacity: l.opacity ?? 1,
@@ -210,7 +231,17 @@ export async function compile(spec: VideoSpec, specFile: string, format: string,
         layer.text = l.text
         layer.css = textCss(l.style, `${path}/style`)
         if (width === undefined) layer.maxWidth = W - 2 * safe.x
+        if (l.split) {
+          layer.split = l.split
+          layer.staggerFrames = (l.stagger ?? 0.05) * fps
+        }
         break
+      case 'qr': {
+        const size = width ?? height ?? Math.round(Math.min(W, H) * 0.3)
+        layer.width = layer.height = size
+        layer.markup = qrSvg(l.data, { color: color(l.color) ?? '#000000', background: color(l.background) ?? '#ffffff', margin: l.margin ?? 4, level: l.level ?? 'M', radius: l.radius ?? 0 })
+        break
+      }
       case 'counter': {
         const start = l.start !== undefined ? toFrames(resolveTime(l.start, ctx, `${path}/start`, issues)) : at
         const end = l.end !== undefined ? toFrames(resolveTime(l.end, ctx, `${path}/end`, issues)) : start + fps
@@ -272,6 +303,9 @@ export async function compile(spec: VideoSpec, specFile: string, format: string,
         layer.module = file(l.module, `${path}/module`)?.url
         layer.props = l.props ?? {}
         layer.times = Object.fromEntries(Object.entries(l.times ?? {}).map(([k, t]) => [k, resolveTime(t, ctx, `${path}/times/${k}`, issues)]))
+        layer.params = Object.fromEntries(
+          Object.entries(l.params ?? {}).map(([k, v]) => [k, typeof v === 'number' ? [{ f: 0, v }] : keyframes(v, ctx, `${path}/params/${k}`)]),
+        )
         layer.width ??= W
         layer.height ??= H
         break
@@ -284,7 +318,7 @@ export async function compile(spec: VideoSpec, specFile: string, format: string,
     scene: Scene
     index: number
     path: string
-    voice?: Required<Omit<Voice, 'pauses'>> & { pauses: number[]; duration: number }
+    voice?: { file: string; lead: number; tail: number; volume: number; fadeIn: number; fadeOut: number; pauses: (number | Pause)[]; duration: number }
     seconds: number
     transition: { type: string; frames: number; overlap: boolean }
   }
@@ -303,11 +337,11 @@ export async function compile(spec: VideoSpec, specFile: string, format: string,
           const info = await analyzeAudio(f.abs, options.ffmpegPath)
           voice = {
             file: f.abs,
-            lead: v.lead!,
-            tail: v.tail!,
+            lead: spanSeconds(v.lead, 0.25),
+            tail: spanSeconds(v.tail, 0.6),
             volume: v.volume!,
-            fadeIn: v.fadeIn!,
-            fadeOut: v.fadeOut!,
+            fadeIn: spanSeconds(v.fadeIn, 0),
+            fadeOut: spanSeconds(v.fadeOut, 0.1),
             duration: info.duration,
             pauses: Array.isArray(v.pauses) ? v.pauses : v.pauses === 'none' ? [] : info.pauses,
           }
@@ -343,7 +377,7 @@ export async function compile(spec: VideoSpec, specFile: string, format: string,
       path,
       voice,
       seconds,
-      transition: { type: t.type, frames: t.type === 'cut' ? 0 : Math.max(1, toFrames(t.duration ?? 0.3)), overlap: !!t.overlap && prepared.length > 0 },
+      transition: { type: t.type, frames: t.type === 'cut' ? 0 : Math.max(1, toFrames(spanSeconds(t.duration, 0.3))), overlap: !!t.overlap && prepared.length > 0 },
     })
   }
 
@@ -424,7 +458,8 @@ export async function compile(spec: VideoSpec, specFile: string, format: string,
         voice?.pauses ?? [],
       )
       pieces = timed.map((c) => ({ text: c.text, start: c.start + offset, end: c.end + offset }))
-      sentenceTimes = sentences.map((_, n) => pieces[parts.findIndex((x) => x.sentence === n)].start)
+      // sentence starts: timed on whole sentences, independent of how captions are split
+      sentenceTimes = timeCues(sentences, span, voice?.pauses ?? []).map((c) => c.start + offset)
     }
     const ctx: TimeContext = {
       fps,

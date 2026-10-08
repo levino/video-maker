@@ -10,7 +10,8 @@ let validators: { spec: ValidateFunction; layer: ValidateFunction } | undefined
 
 function getValidators() {
   if (!validators) {
-    const ajv = new Ajv({ allErrors: true, discriminator: true, strict: false })
+    // verbose: errors carry parentSchema, which the hints need (allowed properties, descriptions)
+    const ajv = new Ajv({ allErrors: true, discriminator: true, strict: false, verbose: true })
     ajv.addSchema(schema, 'spec')
     validators = { spec: ajv.getSchema('spec')!, layer: ajv.getSchema('spec#/definitions/layer')! }
   }
@@ -30,7 +31,8 @@ export function readSpecFile(file: string): unknown {
     ])
   }
   try {
-    return extname(file).toLowerCase() === '.json' ? JSON.parse(text) : parseYaml(text)
+    // YAML: anchors, aliases and merge keys (<<: *base) are allowed to avoid repetition
+    return extname(file).toLowerCase() === '.json' ? JSON.parse(text) : parseYaml(text, { merge: true })
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e)
     throw new VideoMakerError('invalidSpec', `Cannot parse ${file}: ${message}`, [
@@ -82,7 +84,7 @@ function toIssue(e: ErrorObject, root: unknown, basePath = ''): Issue {
       }
     }
     case 'discriminator': {
-      const types = ['text', 'counter', 'image', 'rect', 'svg', 'group', 'custom']
+      const types = (schema.definitions.layer.oneOf as readonly { properties: Record<string, any> }[]).map((b) => b.properties.type.const as string)
       const value = p.tagValue ?? pointerGet(root, `${e.instancePath}/type`)
       const guess = typeof value === 'string' ? closest(value, types) : undefined
       return {

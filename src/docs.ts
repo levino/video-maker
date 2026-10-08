@@ -51,7 +51,12 @@ Farben: CSS-Farbe oder Name aus theme.colors. Längen: Pixel oder "50%" (der Bil
 Zahl = Sekunden. Text: "2.5s", "45f" (Bilder), "start", "end", "voice" (Stimme beginnt), "voiceEnd",
 "sentence:N" (Satz N des Skripts beginnt, ab 1), "word:Brücke" bzw. word:"E-Bike" (Wort wird gesprochen, geschätzt),
 global zusätzlich "scene:<id>", "scene:<id>.end". Versatz anhängen: "sentence:2+0.5", "end-1", "voice+10f".
+Rechnen: + - * / ( ), mix(a, b, t) = a + (b − a)·t, min(…), max(…), z. B. "mix(sentence:2, sentence:3, 0.3)",
+"(voiceEnd - voice) / 2"; Wörter mit Leerzeichen in Ausdrücken mit Anführungszeichen: word:"zwei Wörter".
 In Szenen zählen Zeiten ab Szenenbeginn, in overlays/audio der Wurzel ab Videobeginn.
+Dauern (enter/exit/transition duration, voice lead/tail/fadeIn/fadeOut): Sekunden oder "12f".
+Satzanfänge (sentence:N) werden an gemessenen Sprechpausen ausgerichtet; Satzenden brauchen Pausen ≥ 0,3 s,
+kürzere Pausen (Komma, Doppelpunkt) zählen nur innerhalb eines Satzes.
 
 ## Szene
 
@@ -70,40 +75,53 @@ only: [format…]; formats: {portrait: {layers, background, captions, transition
 
 ## Ebene (gemeinsame Felder)
 
-type: text | counter | image | rect | svg | group | custom
+type: text | counter | image | rect | svg | qr | group | custom
 x, y, width, height              # Pixel oder "%"; Standard x=y=0
 anchor: top-left (Standard) | top | top-right | left | center | right | bottom-left | bottom | bottom-right
+        | baseline | baseline-left | baseline-right   (Grundlinie der ersten Textzeile bei y, wie SVG-Text)
 place: wie anchor, setzt die Ebene in den sicheren Bereich (ersetzt x/y)
 rotate (Grad), scale, opacity
 at, until                        # sichtbar von/bis (Standard: ganze Szene)
 enter, exit: none | fade | slide-up | slide-down | slide-left | slide-right | scale | pop | wipe | grow-x | grow-y | blur | draw
              oder {type, duration: 0.4, ease, distance: 60}   (draw: Linien einer svg-Ebene zeichnen sich)
 animate: {x|y|width|height|scale|scaleX|scaleY|rotate|opacity|blur|draw: [[zeit, wert], …] oder [{t, v, ease}, …]}
-         Werte vor dem ersten Schlüsselbild = erster Wert; ease gilt für das Stück bis zu diesem Schlüsselbild.
-         Transform-Ursprung ist der anchor-Punkt.
+         Werte vor dem ersten Schlüsselbild = erster Wert; ease gilt für das Stück bis zu diesem Schlüsselbild
+         (Standard inOutCubic). Transform-Ursprung ist der anchor-Punkt.
+         Feder: ease "spring(dämpfung, steifigkeit, masse)" läuft in echter Zeit ab dem vorigen Schlüsselbild und
+         schwingt nach dem letzten Schlüsselbild aus: [[t0, 0.6], {t: "t0+1f", v: 1, ease: "spring(14)"}].
+         Folgt noch ein Schlüsselbild, endet die Feder dort – dann t so wählen, dass sie ausgeschwungen ist.
+         draw > 1 zeichnet schneller (Wert wird bei 1 begrenzt), z. B. draw bis 1.9 = nach gut der Hälfte fertig.
 only: [format…]; formats: {portrait: {…Felder überschreiben…}}
 
 text:    text: "Zeile 1\\nZeile 2", style: "titel" | {…}. Ohne width bricht Text an der Breite des sicheren Bereichs um.
+         split: chars|words mit stagger: 0.05 lässt enter je Zeichen/Wort nacheinander laufen.
+qr:      data: "https://…", width (Kantenlänge), color, background, margin (Module, Standard 4), level L|M|Q|H, radius (%)
 counter: from: 0, to: 3.8, start, end (Standard at … at+1 s), decimals: 1, locale: "de-DE", prefix, suffix, ease, style
 image:   src, fit: cover|contain, camera: {from: {zoom: 1, x: 0.5, y: 0.5}, to: {zoom: 1.1, x: 0.6, y: 0.4}, start, end, ease}
          ohne x/y/width/height füllt das Bild den Rahmen
 rect:    color, radius ("50%" = Kreis), borderColor, borderWidth   (Balken: enter grow-x mit anchor left)
 svg:     src: "grafik.svg" | markup: "<svg …>"
 group:   layers: […]; Kinder bewegen sich mit der Gruppe
-custom:  module: "grafik.js", props: {…}, times: {name: TimeRef}   – Ausweg für eigene Grafik (siehe unten)
+custom:  module: "grafik.js", props: {…}, times: {name: TimeRef}, params: {name: zahl | Schlüsselbilder}
+         – Ausweg für eigene Grafik (siehe unten)
 
 Textstil (style, theme.text, theme.styles.<name>, theme.captions):
 preset (Name aus theme.styles), font (Name aus theme.fonts oder CSS-Familie), size, weight, color, italic,
 stretch (Prozent), lineHeight, letterSpacing, uppercase, align, background, borderColor, borderWidth, radius,
 padding (Zahl oder [v, h]), shadow, strike
-theme.captions zusätzlich: bottom (px), maxWidth, maxChars (Standard 80 quer, 42 hoch), maxCps (Prüfgrenze, 20), fade (s)
+theme.captions zusätzlich: bottom (px), maxWidth (äußere Breite der Box), maxChars (Standard 80 quer, 42 hoch),
+             maxCps (Prüfgrenze, 20), fade (s)
 theme.fonts: {Archivo: {src: "fonts/archivo.woff2", weight: "100 900", style, stretch: "75% 100%"}}
              mehrere Schnitte einer Familie: verschiedene Schlüssel mit gleichem family, z. B.
              {Mono400: {src: m400.woff2, family: "IBM Plex Mono", weight: "400"}, Mono600: {…, weight: "600"}}
 theme.safeArea: Anteil je Seite (Standard 0.05)
 
 Easing: linear, in, out, inOut (kubisch), inQuad, outQuad, inOutQuad, inCubic, outCubic, inOutCubic,
-inSine, outSine, inOutSine, inExpo, outExpo, inOutExpo, inBack, outBack, spring
+inSine, outSine, inOutSine, inExpo, outExpo, inOutExpo, inBack, outBack, spring, spring(d, s, m)
+
+Wiederholung vermeiden (YAML): Vorlagen unter templates ablegen und mit Anker/Alias nutzen:
+templates: { titel: &titel { type: text, style: titel, anchor: baseline } }
+… layers: [{ <<: *titel, text: "Hallo", x: 960, y: 300 }]
 
 ## Tonspur
 
@@ -115,12 +133,20 @@ Stimmen der Szenen werden automatisch gemischt. Ausgabe AAC 192 kb/s, 48 kHz.
 // grafik.js – Standard-Export erhält das Element (Größe width×height der Ebene), props und Kontext
 export default function (el, props, ctx) {
   el.innerHTML = '<svg viewBox="0 0 100 100">…</svg>'
-  return (t, info) => { /* t = Sekunden seit Szenenbeginn; info.frame */ }
+  return (t, info) => { /* t = Sekunden seit Szenenbeginn; info.frame; info.params.<name> */ }
 }
 ctx: {width, height, fps, format, box: {width, height}, times: {name: sekunden}, scene: {id, frames, voice: {start, end}, sentences: [bild…]}}
-times löst Zeitreferenzen der Ebene auf (z. B. times: {haften: 'word:"Haften sollen"'}), damit das Modul sich am Sprecher ausrichtet.
+times löst Zeitreferenzen auf (z. B. times: {start: 'word:"auf dem Dach"'}), params sind animierte Zahlen
+(z. B. params: {neigung: [[sentence:2, 0], {t: "sentence:2+1f", v: 16, ease: "spring(9, 60)"}]}); so bleibt die
+Zeitsteuerung in der Beschreibung und das Modul zeichnet nur.
 Das Modul darf importieren; Zeitquellen (Date, performance.now, requestAnimationFrame, Timer) laufen virtuell.
-Der Szenen-Cache erkennt nur Änderungen am Modul selbst, nicht an dessen Importen (dann --no-cache).
+Der Szenen-Cache verfolgt relative Importe (import … from './x.js', import('./x.js')); Dateien, die ein Modul
+anders lädt (fetch), erkennt er nicht – dann --no-cache.
+
+## Vorschau
+
+video-maker preview <eingabe> startet einen lokalen Server mit Zeitregler und Ton (alle Tonspuren, synchron zur
+Wiedergabe). Beschreibungen werden beim Neuladen der Seite neu kompiliert.
 
 ## HTML-Komposition (ohne Beschreibung)
 

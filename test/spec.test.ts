@@ -11,6 +11,10 @@ import { validateSpec } from '../src/spec/load.js'
 import { resolveTime, type TimeContext } from '../src/spec/time.js'
 import type { VideoSpec } from '../src/spec/types.js'
 import { resolveFfmpeg } from '../src/ffmpeg.js'
+import type { Issue } from '../src/errors.js'
+import { spring, parseSpring } from '../src/kit/easing.js'
+import { qrSvg } from '../src/spec/compile.js'
+import { hashFile, moduleImports } from '../src/spec/project.js'
 
 let dir: string
 const spec = (s: object) => {
@@ -34,6 +38,14 @@ describe('schema validation', () => {
   it('reports unknown properties with path and a suggestion', () => {
     const issues = validateSpec({ formats: { a: { width: 100, height: 100 } }, scenes: [{ id: 's', duration: 1, layers: [{ type: 'text', text: 'x', colour: 'red' }] }] })
     expect(issues).toContainEqual(expect.objectContaining({ code: 'unknown-property', path: '/scenes/0/layers/0/colour' }))
+  })
+
+  it('lists the allowed properties when nothing is close', () => {
+    const issues = validateSpec({ formats: { a: { width: 100, height: 100 } }, scenes: [{ id: 's', duration: 1, xyzzy: 1 }] })
+    const hint = issues.find((i) => i.path === '/scenes/0/xyzzy')?.hint ?? ''
+    expect(hint).toContain('Allowed:')
+    expect(hint).toContain('layers')
+    expect(hint).toContain('voice')
   })
 
   it('suggests the closest layer type and enum value', () => {
@@ -63,9 +75,25 @@ describe('time references', () => {
     sceneIds: ['a', 'b'],
   }
   const t = (ref: string | number) => {
-    const issues: never[] = []
+    const issues: Issue[] = []
     return [resolveTime(ref, ctx, '/x', issues), issues] as const
   }
+
+  it('evaluates expressions over references', () => {
+    expect(t('mix(sentence:2, sentence:3, 0.3)')[0]).toBeCloseTo(3.9)
+    expect(t('(voiceEnd - voice) / 2')[0]).toBeCloseTo(3.75)
+    expect(t('sentence:2 + 0.5 * (sentence:3 - sentence:2)')[0]).toBeCloseTo(4.5)
+    expect(t('max(word:Brücke, 5) - 10f')[0]).toBeCloseTo(5 - 1 / 3)
+    expect(t('min(scene:b, end) * 2')[0]).toBe(20)
+    expect(t('mix(word:"Brücke", end, 0.5)')[0]).toBeCloseTo(7.1)
+  })
+
+  it('explains broken expressions', () => {
+    const [, issues] = t('mix(sentence:2, 3)')
+    expect(issues[0]).toMatchObject({ code: 'invalid-time', path: '/x' })
+    expect(issues[0].message).toContain('three arguments')
+    expect(t('(sentence:9 + 1)')[1][0].message).toContain('Sentence 9')
+  })
 
   it('reads numbers, units and anchors with offsets', () => {
     expect(t(2.5)[0]).toBe(2.5)
@@ -106,6 +134,51 @@ describe('caption timing', () => {
     const pieces = ['Am Morgen fuhr der Zug los', 'und kam erst am Abend wieder an.', 'Unterwegs regnete es ganz kräftig.', 'Die Fahrgäste warteten geduldig in der Halle auf die Weiterfahrt.']
     const cues = timeCues(pieces, 8.375, [2.808, 4.748])
     expect(cues.map((c) => Math.round(c.end * 1000) / 1000)).toEqual([1.53, 2.808, 4.748, 8.375])
+  })
+})
+
+describe('spring', () => {
+  it('starts at 0, overshoots when underdamped and settles at 1', () => {
+    expect(spring(0)).toBe(0)
+    const values = Array.from({ length: 300 }, (_, i) => spring(i / 100))
+    expect(Math.max(...values)).toBeGreaterThan(1.05)
+    expect(spring(4)).toBeCloseTo(1, 3)
+  })
+
+  it('does not overshoot when critically or over-damped', () => {
+    for (const damping of [20, 40]) {
+      const values = Array.from({ length: 300 }, (_, i) => spring(i / 100, { damping, stiffness: 100 }))
+      expect(Math.max(...values)).toBeLessThanOrEqual(1)
+      expect(values.every((v, i) => i === 0 || v >= values[i - 1])).toBe(true)
+    }
+  })
+
+  it('parses spring(damping, stiffness, mass)', () => {
+    expect(parseSpring('spring')).toEqual({ damping: undefined, stiffness: undefined, mass: undefined })
+    expect(parseSpring('spring(9, 170)')).toEqual({ damping: 9, stiffness: 170, mass: undefined })
+    expect(parseSpring('outCubic')).toBeUndefined()
+  })
+})
+
+describe('qr layer', () => {
+  it('renders the modules as one path with quiet zone', () => {
+    const svg = qrSvg('https://example.org', { color: '#000', background: '#fff', margin: 4, level: 'M', radius: 0 })
+    // version 2 (25 modules) + 2 × 4 quiet zone
+    expect(svg).toContain('viewBox="0 0 33 33"')
+    expect(svg).toMatch(/<path d="M4 4h1v1h-1z/) // finder pattern starts in the corner
+  })
+})
+
+describe('cache keys of modules', () => {
+  it('follow relative imports, so a change in an imported file changes the hash', () => {
+    const a = join(dir, 'a.js')
+    const b = join(dir, 'b.js')
+    writeFileSync(a, "import { x } from './b.js'\nexport default () => x\nconst lazy = () => import('./c.js')")
+    writeFileSync(b, 'export const x = 1')
+    expect(moduleImports(a, "import { x } from './b.js'; import('./c.js'); import 'https://x/y.js'")).toEqual([b, join(dir, 'c.js')])
+    const first = hashFile(a)
+    writeFileSync(b, 'export const x = 2 // changed')
+    expect(hashFile(a)).not.toBe(first)
   })
 })
 

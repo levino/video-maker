@@ -19,13 +19,18 @@ export interface PlanKey {
 export interface PlanLayer {
   path: string
   id?: string
-  type: 'text' | 'counter' | 'image' | 'rect' | 'svg' | 'group' | 'custom'
+  type: 'text' | 'counter' | 'image' | 'rect' | 'svg' | 'group' | 'custom' | 'qr'
   x: number
   y: number
   width?: number
   height?: number
   /** Fraction of the layer box placed at x/y. */
   anchor: [number, number]
+  /** Vertical anchor is the first text baseline instead of anchor[1]. */
+  baseline?: boolean
+  split?: 'chars' | 'words'
+  staggerFrames?: number
+  params?: Record<string, PlanKey[]>
   maxWidth?: number
   rotate: number
   scale: number

@@ -98,13 +98,16 @@ export type MotionType =
 
 export interface Motion {
   type: MotionType
-  duration?: number
+  /** Seconds, or "12f" / "0.4s". */
+  duration?: number | string
   ease?: EaseName
   /** Slide distance px (default 60). */
   distance?: number
 }
 
 export type Placement = 'center' | 'top' | 'bottom' | 'left' | 'right' | 'top-left' | 'top-right' | 'bottom-left' | 'bottom-right'
+/** baseline anchors put the text baseline of the first line at y (like SVG text). */
+export type Anchor = Placement | 'baseline' | 'baseline-left' | 'baseline-right'
 
 /** draw: 0..1 share of the strokes of an svg layer that is drawn. */
 export type AnimatableProp = 'x' | 'y' | 'scale' | 'scaleX' | 'scaleY' | 'rotate' | 'opacity' | 'width' | 'height' | 'blur' | 'draw'
@@ -116,7 +119,7 @@ interface LayerBase {
   width?: Length
   height?: Length
   /** Which point of the layer sits at x/y (default top-left). */
-  anchor?: Placement
+  anchor?: Anchor
   /** Place inside the safe area instead of x/y. */
   place?: Placement
   rotate?: number
@@ -139,6 +142,21 @@ export interface TextLayer extends LayerBase {
   type: 'text'
   text: string
   style?: string | TextStyle
+  /** Let the enter motion run per character or word, each `stagger` seconds after the previous. */
+  split?: 'chars' | 'words'
+  stagger?: number
+}
+
+export interface QrLayer extends LayerBase {
+  type: 'qr'
+  data: string
+  color?: string
+  background?: string
+  /** Quiet zone in modules (default 4). */
+  margin?: number
+  /** Error correction (default M). */
+  level?: 'L' | 'M' | 'Q' | 'H'
+  radius?: number
 }
 
 export interface CounterLayer extends LayerBase {
@@ -196,19 +214,21 @@ export interface CustomLayer extends LayerBase {
   props?: Record<string, unknown>
   /** Named time references, passed resolved (seconds from scene start) as context.times. */
   times?: Record<string, TimeRef>
+  /** Named animated numbers, evaluated every frame and passed to update() as info.params. */
+  params?: Record<string, number | Keyframe[]>
 }
 
-export type Layer = TextLayer | CounterLayer | ImageLayer | RectLayer | SvgLayer | GroupLayer | CustomLayer
+export type Layer = TextLayer | CounterLayer | ImageLayer | RectLayer | SvgLayer | GroupLayer | CustomLayer | QrLayer
 
 export interface Voice {
   file: string
-  /** Silence before the voice starts, seconds. */
-  lead?: number
-  /** Time after the voice ends, seconds. */
-  tail?: number
+  /** Silence before the voice starts, seconds or "8f". */
+  lead?: number | string
+  /** Time after the voice ends, seconds or "8f". */
+  tail?: number | string
   volume?: number
-  fadeIn?: number
-  fadeOut?: number
+  fadeIn?: number | string
+  fadeOut?: number | string
   /** Pause positions (seconds into the file) for caption timing, or "detect" (default). */
   pauses?: number[] | 'detect' | 'none'
 }
@@ -232,7 +252,7 @@ export interface AudioSpec {
 
 export interface Transition {
   type: 'cut' | 'fade' | 'slide-left' | 'slide-up' | 'wipe' | 'zoom'
-  duration?: number
+  duration?: number | string
   /** Start before the previous scene ends (cross-fade) instead of after it. */
   overlap?: boolean
 }
@@ -256,6 +276,8 @@ export interface Scene {
 
 export interface VideoSpec {
   $schema?: string
+  /** Ignored; room for YAML anchors. */
+  templates?: Record<string, unknown>
   fps?: number
   formats: Record<string, Format>
   theme?: Theme

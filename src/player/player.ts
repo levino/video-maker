@@ -3,14 +3,19 @@
  * it per frame. Implements the composition contract (window.videoMaker) and inspection hooks
  * used by `check`.
  */
-import { ease as easings } from '../kit/easing.js'
+import { ease as easings, parseSpring, spring } from '../kit/easing.js'
 import type { Plan, PlanKey, PlanLayer, PlanMotion, PlanScene } from '../spec/plan.js'
 
 type EaseFn = (p: number) => number
-const spring: EaseFn = (p) => (p >= 1 ? 1 : 1 - Math.exp(-6 * p) * Math.cos(2.4 * Math.PI * p))
-const named: Record<string, EaseFn> = { in: easings.inCubic, out: easings.outCubic, inOut: easings.inOutCubic, back: easings.outBack, spring }
-const easeFn = (name?: string): EaseFn => (name && (named[name] ?? (easings as unknown as Record<string, EaseFn>)[name])) || easings.inOutCubic
+const named: Record<string, EaseFn> = { in: easings.inCubic, out: easings.outCubic, inOut: easings.inOutCubic, back: easings.outBack }
+/** Easing by name; a spring runs in real time, so it needs the segment length in seconds. */
+const easeFn = (name: string | undefined, seconds = 1): EaseFn => {
+  const s = name ? parseSpring(name) : undefined
+  if (s) return (p) => spring(p * seconds, s)
+  return (name && (named[name] ?? (easings as unknown as Record<string, EaseFn>)[name])) || easings.inOutCubic
+}
 const clamp01 = (p: number) => Math.min(1, Math.max(0, p))
+const fps = (window as any).__videoMakerPlan.fps as number
 
 function keyValue(keys: PlanKey[] | undefined, f: number, fallback: number): number {
   if (!keys?.length) return fallback
@@ -19,10 +24,17 @@ function keyValue(keys: PlanKey[] | undefined, f: number, fallback: number): num
     const b = keys[i]
     if (f < b.f) {
       const a = keys[i - 1]
-      return a.v + (b.v - a.v) * easeFn(b.ease)(clamp01((f - a.f) / (b.f - a.f)))
+      return a.v + (b.v - a.v) * easeFn(b.ease, (b.f - a.f) / fps)(clamp01((f - a.f) / (b.f - a.f)))
     }
   }
-  return keys[keys.length - 1].v
+  // a spring into the last key keeps swinging until it settles
+  const last = keys[keys.length - 1]
+  const s = keys.length > 1 && last.ease ? parseSpring(last.ease) : undefined
+  if (s) {
+    const a = keys[keys.length - 2]
+    return a.v + (last.v - a.v) * spring((f - a.f) / fps, s)
+  }
+  return last.v
 }
 
 interface Effect {
@@ -91,6 +103,26 @@ interface View {
   update(f: number): void
   children: View[]
   custom?: (t: number, info: object) => unknown
+  /** Distance from the top of the box to the first text baseline (baseline anchors). */
+  baselinePx?: number
+}
+
+/** Measure first-line baselines once fonts are loaded: an empty inline-block sits on the baseline. */
+function measureBaselines() {
+  for (const view of views) {
+    if (!view.layer.baseline) continue
+    const { el } = view
+    const display = el.style.display
+    el.style.display = ''
+    const probe = document.createElement('span')
+    probe.style.display = 'inline-block'
+    probe.style.width = probe.style.height = '0'
+    el.prepend(probe)
+    view.baselinePx = probe.offsetTop + el.clientTop
+    probe.remove()
+    el.style.display = display
+    el.style.transformOrigin = `${view.layer.anchor[0] * 100}% ${view.baselinePx}px`
+  }
 }
 
 const plan = (window as any).__videoMakerPlan as Plan
@@ -119,9 +151,24 @@ function buildLayer(layer: PlanLayer, parent: HTMLElement, scene?: PlanScene): V
   let img: HTMLImageElement | undefined
   let nf: Intl.NumberFormat | undefined
   let strokes: SVGGeometryElement[] = []
+  const units: HTMLSpanElement[] = []
   switch (layer.type) {
     case 'text':
-      el.textContent = layer.text ?? ''
+      if (layer.split) {
+        // one span per character or word; whitespace stays plain text so lines wrap normally
+        for (const part of (layer.text ?? '').split(layer.split === 'chars' ? /(\s)/ : /(\s+)/)) {
+          if (!part) continue
+          if (/^\s+$/.test(part)) el.append(part)
+          else
+            for (const unit of layer.split === 'chars' ? Array.from(part) : [part]) {
+              const span = document.createElement('span')
+              span.textContent = unit
+              span.style.position = 'relative'
+              el.append(span)
+              units.push(span)
+            }
+        }
+      } else el.textContent = layer.text ?? ''
       el.style.whiteSpace = 'pre-line'
       el.style.textWrap = 'balance'
       el.style.overflowWrap = 'break-word'
@@ -148,6 +195,7 @@ function buildLayer(layer: PlanLayer, parent: HTMLElement, scene?: PlanScene): V
       el.append(img)
       break
     case 'svg':
+    case 'qr':
       el.innerHTML = layer.markup ?? ''
       if (layer.width !== undefined || layer.height !== undefined) {
         const svg = el.querySelector('svg')
@@ -204,15 +252,27 @@ function buildLayer(layer: PlanLayer, parent: HTMLElement, scene?: PlanScene): V
       blur: keyValue(a.blur, f, 0),
       draw: keyValue(a.draw, f, 1),
     }
-    if (layer.enter && f < layer.at + layer.enter.frames) applyMotion(layer.enter, easeFn(layer.enter.ease)((f - layer.at) / layer.enter.frames), e)
-    if (layer.exit && f >= layer.until - layer.exit.frames) applyMotion(layer.exit, easeFn(layer.exit.ease)((layer.until - f) / layer.exit.frames), e)
+    const { enter, exit } = layer
+    if (enter && units.length) {
+      // per character/word: each unit runs the enter motion `staggerFrames` after the previous one
+      units.forEach((span, i) => {
+        const u: Effect = { opacity: 1, dx: 0, dy: 0, scale: 1, scaleX: 1, scaleY: 1, blur: 0, draw: 1 }
+        const local = f - layer.at - i * (layer.staggerFrames ?? 0)
+        if (local < enter.frames) applyMotion(enter, easeFn(enter.ease, enter.frames / fps)(clamp01(local / enter.frames)), u)
+        span.style.opacity = String(clamp01(u.opacity))
+        span.style.left = `${u.dx}px`
+        span.style.top = `${u.dy}px`
+      })
+    } else if (enter && f < layer.at + enter.frames) applyMotion(enter, easeFn(enter.ease, enter.frames / fps)((f - layer.at) / enter.frames), e)
+    if (exit && f >= layer.until - exit.frames) applyMotion(exit, easeFn(exit.ease, exit.frames / fps)((layer.until - f) / exit.frames), e)
     el.style.left = `${keyValue(a.x, f, layer.x)}px`
     el.style.top = `${keyValue(a.y, f, layer.y)}px`
     if (a.width) el.style.width = `${keyValue(a.width, f, layer.width ?? 0)}px`
     if (a.height) el.style.height = `${keyValue(a.height, f, layer.height ?? 0)}px`
     el.style.opacity = String(clamp01(e.opacity))
     const [ax, ay] = layer.anchor
-    el.style.transform = `translate(${-ax * 100}%, ${-ay * 100}%) translate(${e.dx}px, ${e.dy}px) rotate(${keyValue(a.rotate, f, layer.rotate)}deg) scale(${e.scale * e.scaleX}, ${e.scale * e.scaleY})`
+    const dyAnchor = layer.baseline ? `${-(view.baselinePx ?? 0)}px` : `${-ay * 100}%`
+    el.style.transform = `translate(${-ax * 100}%, ${dyAnchor}) translate(${e.dx}px, ${e.dy}px) rotate(${keyValue(a.rotate, f, layer.rotate)}deg) scale(${e.scale * e.scaleX}, ${e.scale * e.scaleY})`
     el.style.clipPath = e.clip !== undefined ? `inset(0 ${e.clip}% 0 0)` : ''
     el.style.filter = e.blur > 0 ? `blur(${e.blur}px)` : ''
     for (const s of strokes) s.style.strokeDashoffset = String(1 - clamp01(e.draw))
@@ -229,7 +289,11 @@ function buildLayer(layer: PlanLayer, parent: HTMLElement, scene?: PlanScene): V
       img.style.transform = `scale(${mix(c.from.zoom, c.to.zoom)})`
     }
     for (const child of view.children) child.update(f)
-    if (view.custom) view.custom(f / plan.fps, { frame: f, fps: plan.fps })
+    if (view.custom) {
+      const params: Record<string, number> = {}
+      for (const [k, keys] of Object.entries(layer.params ?? {})) params[k] = keyValue(keys, f, 0)
+      view.custom(f / plan.fps, { frame: f, fps: plan.fps, params })
+    }
   }
   views.push(view)
   return view
@@ -264,7 +328,8 @@ const cueEl = document.createElement('div')
 cueEl.dataset.vmText = '1'
 cueEl.dataset.vmCaption = '1'
 setStyle(cueEl, plan.captions.css)
-Object.assign(cueEl.style, { maxWidth: `${plan.captions.maxWidth}px`, textWrap: 'balance', whiteSpace: 'pre-line' })
+// maxWidth is the outer width of the caption box, padding included
+Object.assign(cueEl.style, { maxWidth: `${plan.captions.maxWidth}px`, boxSizing: 'border-box', textWrap: 'balance', whiteSpace: 'pre-line' })
 captionBox.append(cueEl)
 stage.append(captionBox)
 
@@ -278,7 +343,8 @@ function renderFrame(f: number) {
     const target = t.overlap ? el : content
     el.style.opacity = content.style.opacity = '1'
     el.style.transform = content.style.transform = el.style.clipPath = content.style.clipPath = ''
-    if (t.frames > 0 && local < t.frames && scene !== plan.scenes[0]) {
+    // the compiler gives the first scene a transition only when the description asks for one
+    if (t.frames > 0 && local < t.frames) {
       const p = easeFn('inOutSine')(local / t.frames)
       if (t.type === 'fade') target.style.opacity = String(p)
       else if (t.type === 'slide-left') target.style.transform = `translateX(${(1 - p) * W}px)`
@@ -318,7 +384,7 @@ for (const font of plan.fonts) {
   height: H,
   fps: plan.fps,
   frames: plan.frames,
-  ready: () => Promise.all(pending),
+  ready: () => Promise.all(pending).then(measureBaselines),
   frame: (f: number) => renderFrame(f),
 }
 

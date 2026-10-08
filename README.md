@@ -51,6 +51,13 @@ npx video-maker render video.yaml --out out/film.mp4    # → out/film-landscape
 
 Ein vollständiges Beispiel mit eigener Grafik liegt in [examples/demo](examples/demo).
 
+Was die Beschreibung kann, in Kürze: Formate nebeneinander (16:9, 9:16 …), Szenendauer nach Sprecherspur,
+Untertitel aus dem Skript (an gemessenen Sprechpausen ausgerichtet), Zeitangaben wie `sentence:2`,
+`word:"auf dem Dach"+10f` oder `mix(sentence:2, sentence:3, 0.3)`, Ebenen für Text (auch an der Grundlinie
+ausgerichtet und zeichenweise eingeblendet), Zähler, Bilder mit Kamerafahrt, Rechtecke, SVG (Linien zeichnen sich),
+QR-Codes, Gruppen und eigene JavaScript-Module mit animierten Parametern; Schlüsselbilder mit Easing oder
+physikalischen Federn; Tonspuren mit Lautstärkeverlauf; Themes mit eigenen Schriften. Vollständig: `npx video-maker docs`.
+
 ## Befehle
 
 | Befehl | Zweck |
@@ -61,7 +68,7 @@ Ein vollständiges Beispiel mit eigener Grafik liegt in [examples/demo](examples
 | `check <eingabe>` | Prüfungen: Text außerhalb von Bild oder sicherem Bereich, Überlauf, Überlappung, Kontrast, Untertitel zu lang, zu schnell oder zu viele Zeilen, Szene kürzer als ihr Ton, fehlende Dateien |
 | `validate <beschreibung>` | nur Schema und Zeitplan, ohne Browser |
 | `schema`, `docs` | JSON-Schema bzw. Referenz ausgeben |
-| `preview <eingabe>` | lokale Vorschau mit Zeitregler |
+| `preview <eingabe>` | lokale Vorschau mit Zeitregler und Ton |
 | `mcp` | MCP-Server über stdio (auch als `video-maker-mcp`) |
 
 Exit-Codes: `0` ok, `1` intern, `2` Aufruf falsch, `3` Beschreibung ungültig, `4` Datei fehlt,
