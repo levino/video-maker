@@ -38,6 +38,9 @@ export interface EncodeOptions {
   audioBitrate?: string
 }
 
+// No encoder version strings or timestamps in the output: same input, same bytes.
+const bitexact = ['-map_metadata', '-1', '-fflags', '+bitexact', '-flags:v', '+bitexact', '-flags:a', '+bitexact']
+
 /** Arguments for ffmpeg reading images from stdin and writing H.264/AAC MP4. */
 export function encodeArgs(o: EncodeOptions): string[] {
   const duration = o.frames / o.fps
@@ -49,7 +52,16 @@ export function encodeArgs(o: EncodeOptions): string[] {
   if (o.width % 2 || o.height % 2) args.push('-vf', 'pad=ceil(iw/2)*2:ceil(ih/2)*2')
   args.push('-c:v', 'libx264', '-preset', o.preset ?? 'medium', '-crf', String(o.crf ?? 18), '-pix_fmt', 'yuv420p', '-r', String(o.fps))
   if (o.audio) args.push('-c:a', 'aac', '-b:a', o.audioBitrate ?? '192k')
-  args.push('-t', String(duration), '-movflags', '+faststart', o.out)
+  args.push(...bitexact, '-t', String(duration), '-movflags', '+faststart', o.out)
+  return args
+}
+
+/** Join video-only segments (concat list file) without re-encoding and add the mixed audio. */
+export function muxArgs(o: { list: string; fps: number; frames: number; audio?: AudioMixPlan; out: string; audioBitrate?: string }): string[] {
+  const args = ['-y', '-hide_banner', '-loglevel', 'error', '-f', 'concat', '-safe', '0', '-i', o.list]
+  for (const file of o.audio?.inputs ?? []) args.push('-i', file)
+  if (o.audio) args.push('-filter_complex', o.audio.filter, '-map', '0:v', '-map', '[aout]', '-c:a', 'aac', '-b:a', o.audioBitrate ?? '192k')
+  args.push('-c:v', 'copy', ...bitexact, '-t', String(o.frames / o.fps), '-movflags', '+faststart', o.out)
   return args
 }
 

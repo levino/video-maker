@@ -4,9 +4,10 @@ import { mkdir, writeFile } from 'node:fs/promises'
 import { dirname, relative, resolve } from 'node:path'
 import { chromium, type Browser, type BrowserContext, type CDPSession, type Page } from 'playwright'
 import { planAudioMix, type AudioTrack } from './audio.js'
+import { VideoMakerError } from './errors.js'
 import { encodeArgs, resolveFfmpeg, spawnFfmpeg } from './ffmpeg.js'
 import { installRuntime, type Meta, type RuntimeOptions } from './runtime.js'
-import { serve, type StaticServer } from './server.js'
+import { serve, type ServeOptions, type StaticServer } from './server.js'
 
 export type { Meta }
 
@@ -15,7 +16,9 @@ export interface CompositionOptions {
   input: string
   /** Directory served for local input (default: the HTML file's directory). */
   root?: string
-  /** Override or supply metadata the page does not define. */
+  /** Generated pages; `input` may name one of them (used for video descriptions). */
+  routes?: ServeOptions['routes']
+  /** Override or supply metadata. */
   width?: number
   height?: number
   fps?: number
@@ -28,15 +31,11 @@ export interface CompositionOptions {
   seed?: number
   /** Extra Chromium flags, appended to the defaults. */
   chromiumArgs?: string[]
-  /** Forward the page's console to the terminal. */
+  /** Forward the page's console to stderr. */
   verbose?: boolean
 }
 
-export interface RenderOptions extends CompositionOptions {
-  out: string
-  audio?: AudioTrack[]
-  /** Number of browser pages rendering in parallel (default: 4). */
-  parallel?: number
+export interface EncodeSettings {
   /** Image format piped to ffmpeg (default jpeg; png is lossless but slower). */
   imageFormat?: 'jpeg' | 'png'
   /** JPEG quality 0–100 (default 95). */
@@ -46,6 +45,13 @@ export interface RenderOptions extends CompositionOptions {
   /** x264 preset (default medium). */
   preset?: string
   ffmpegPath?: string
+  /** Number of pages rendering in parallel (default 4). */
+  parallel?: number
+}
+
+export interface RenderOptions extends CompositionOptions, EncodeSettings {
+  out: string
+  audio?: AudioTrack[]
   /** Render only frames [from, to). */
   range?: [number, number]
   onProgress?: (done: number, total: number) => void
@@ -80,27 +86,33 @@ export interface Composition {
 
 export interface FramePage {
   capture(frame: number, format?: 'png' | 'jpeg', quality?: number): Promise<Buffer>
+  /** Seek without capturing. */
+  seek(frame: number): Promise<void>
+  /** Screenshot of the current state. */
+  shot(format?: 'png' | 'jpeg', quality?: number): Promise<Buffer>
   page: Page
   close(): Promise<void>
 }
 
-function locate(input: string, root?: string) {
+function locate(options: CompositionOptions) {
+  const { input, root, routes } = options
   if (/^https?:\/\//.test(input)) return { url: input }
+  if (routes && routes[input.replace(/[?#].*$/, '')]) return { base: resolve(root ?? '.'), path: input }
   const m = /^([^?#]*)(.*)$/.exec(input)!
   const file = resolve(m[1])
-  if (!existsSync(file)) throw new Error(`Input not found: ${file}`)
+  if (!existsSync(file)) throw new VideoMakerError('missingFile', `Input not found: ${file}`, [{ code: 'file-missing', severity: 'error', message: `Input not found: ${file}`, hint: 'Check the path.' }])
   const base = resolve(root ?? dirname(file))
   const rel = relative(base, file)
-  if (rel.startsWith('..')) throw new Error(`Input ${file} lies outside root ${base}`)
+  if (rel.startsWith('..')) throw new VideoMakerError('usage', `Input ${file} lies outside root ${base}`)
   return { base, path: '/' + rel.split(/[\\/]/).map(encodeURIComponent).join('/') + m[2] }
 }
 
 export async function openComposition(options: CompositionOptions): Promise<Composition> {
-  const where = locate(options.input, options.root)
+  const where = locate(options)
   let server: StaticServer | undefined
   let browser: Browser | undefined
   try {
-    if (where.base) server = await serve({ root: where.base })
+    if (where.base) server = await serve({ root: where.base, routes: options.routes })
     const url = where.url ?? server!.url + where.path
     browser = await chromium.launch({
       args: [...defaultArgs, ...(options.chromiumArgs ?? [])],
@@ -118,11 +130,14 @@ export async function openComposition(options: CompositionOptions): Promise<Comp
       const page = await context.newPage()
       const errors: string[] = []
       page.on('pageerror', (e) => errors.push(e.message))
-      if (options.verbose) page.on('console', (m) => console.error(`[page] ${m.text()}`))
+      page.on('console', (m) => {
+        if (options.verbose) console.error(`[page] ${m.text()}`)
+        if (m.type() === 'error') errors.push(m.text())
+      })
       const response = await page.goto(url, { waitUntil: 'load' })
-      if (response && !response.ok()) throw new Error(`${url}: HTTP ${response.status()}`)
+      if (response && !response.ok()) throw new VideoMakerError('renderFailed', `${url}: HTTP ${response.status()}`)
       const meta = await page.evaluate(() => (window as any).__videoMakerDriver.ready() as Promise<Meta>).catch((e) => {
-        throw new Error(`Composition not ready: ${e.message}${errors.length ? '\nPage errors:\n' + errors.join('\n') : ''}`)
+        throw new VideoMakerError('renderFailed', `Composition not ready: ${e.message}${errors.length ? '\nPage errors:\n' + errors.join('\n') : ''}`)
       })
       return { context, page, meta }
     }
@@ -144,18 +159,26 @@ export async function openComposition(options: CompositionOptions): Promise<Comp
         const opened = spare ?? (await newPage({ width: meta.width, height: meta.height }))
         spare = undefined
         const cdp: CDPSession = await opened.context.newCDPSession(opened.page)
+        const shot = async (format: 'png' | 'jpeg' = 'png', quality = 95) => {
+          const result = await cdp.send('Page.captureScreenshot', {
+            format,
+            ...(format === 'jpeg' ? { quality } : {}),
+            clip: { x: 0, y: 0, width: meta.width, height: meta.height, scale: 1 },
+            optimizeForSpeed: format === 'jpeg',
+          })
+          return Buffer.from(result.data, 'base64')
+        }
+        const seek = async (frame: number) => {
+          if (!(frame >= 0 && frame < meta.frames)) throw new VideoMakerError('usage', `Frame ${frame} outside 0..${meta.frames - 1}`)
+          await opened.page.evaluate((f) => (window as any).__videoMakerDriver.seek(f), frame)
+        }
         return {
           page: opened.page,
+          seek,
+          shot,
           async capture(frame, format = 'png', quality = 95) {
-            if (!(frame >= 0 && frame < meta.frames)) throw new Error(`Frame ${frame} outside 0..${meta.frames - 1}`)
-            await opened.page.evaluate((f) => (window as any).__videoMakerDriver.seek(f), frame)
-            const shot = await cdp.send('Page.captureScreenshot', {
-              format,
-              ...(format === 'jpeg' ? { quality } : {}),
-              clip: { x: 0, y: 0, width: meta.width, height: meta.height, scale: 1 },
-              optimizeForSpeed: format === 'jpeg',
-            })
-            return Buffer.from(shot.data, 'base64')
+            await seek(frame)
+            return shot(format, quality)
           },
           close: () => opened.context.close(),
         }
@@ -187,6 +210,73 @@ export async function renderStill(options: StillOptions): Promise<Buffer> {
   }
 }
 
+/**
+ * Capture frames [from, to) with all pages in parallel and pipe them in order into an ffmpeg
+ * process started with `args`. Workers take the next frame from a shared counter; a window bounds
+ * how far they may run ahead of the writer.
+ */
+export async function encodeFrames(
+  pages: FramePage[],
+  from: number,
+  to: number,
+  args: string[],
+  settings: EncodeSettings & { onProgress?: (done: number, total: number) => void },
+): Promise<void> {
+  const total = to - from
+  const imageFormat = settings.imageFormat ?? 'jpeg'
+  const ffmpeg = spawnFfmpeg(resolveFfmpeg(settings.ffmpegPath), args)
+  const workers = pages.slice(0, Math.max(1, Math.min(pages.length, total)))
+  const ahead = workers.length * 4
+  const slots = new Map<number, { promise: Promise<Buffer>; resolve: (b: Buffer) => void }>()
+  const slot = (i: number) => {
+    let s = slots.get(i)
+    if (!s) {
+      let resolve!: (b: Buffer) => void
+      const promise = new Promise<Buffer>((r) => (resolve = r))
+      s = { promise, resolve }
+      slots.set(i, s)
+    }
+    return s
+  }
+  let next = from
+  let written = from
+  let failed: unknown
+  const waiters: (() => void)[] = []
+  const advanced = () => new Promise<void>((r) => waiters.push(r))
+
+  const worker = async (page: FramePage) => {
+    while (!failed) {
+      const i = next++
+      if (i >= to) return
+      while (i - written >= ahead && !failed) await advanced()
+      slot(i).resolve(await page.capture(i, imageFormat, settings.quality ?? 95))
+    }
+  }
+  const writer = async () => {
+    const stdin = ffmpeg.child.stdin!
+    const early = ffmpeg.done.then(() => Promise.reject(new Error('ffmpeg ended early')))
+    early.catch(() => {})
+    for (let i = from; i < to; i++) {
+      const image = await Promise.race([slot(i).promise, early])
+      slots.delete(i)
+      if (!stdin.write(image)) await once(stdin, 'drain')
+      written = i + 1
+      waiters.splice(0).forEach((r) => r())
+      settings.onProgress?.(written - from, total)
+    }
+    stdin.end()
+  }
+  const fail = (e: unknown) => {
+    failed ??= e
+    waiters.splice(0).forEach((r) => r())
+    ffmpeg.child.kill('SIGKILL')
+    throw e
+  }
+  await Promise.all([...workers.map((p) => worker(p).catch(fail)), writer().catch(fail), ffmpeg.done.catch(fail)]).catch(() => {
+    throw failed instanceof VideoMakerError ? failed : new VideoMakerError('renderFailed', failed instanceof Error ? failed.message : String(failed))
+  })
+}
+
 export interface RenderResult {
   out: string
   meta: Meta
@@ -201,77 +291,14 @@ export async function render(options: RenderOptions): Promise<RenderResult> {
     const { meta } = composition
     const from = options.range?.[0] ?? 0
     const to = Math.min(options.range?.[1] ?? meta.frames, meta.frames)
-    if (!(from >= 0 && to <= meta.frames && from < to)) throw new Error(`Invalid range ${from}..${to}`)
+    if (!(from >= 0 && from < to)) throw new VideoMakerError('usage', `Invalid range ${from}..${to}`)
     const total = to - from
-    const imageFormat = options.imageFormat ?? 'jpeg'
-    const workers = Math.max(1, Math.min(options.parallel ?? 4, total))
     const audio = planAudioMix(options.audio ?? [], total / meta.fps)
-    for (const file of audio?.inputs ?? []) if (!existsSync(file)) throw new Error(`Audio file not found: ${file}`)
-
+    for (const file of audio?.inputs ?? []) if (!existsSync(file)) throw new VideoMakerError('missingFile', `Audio file not found: ${file}`)
     await mkdir(dirname(resolve(options.out)), { recursive: true })
-    const ffmpeg = spawnFfmpeg(
-      resolveFfmpeg(options.ffmpegPath),
-      encodeArgs({ ...meta, frames: total, imageFormat, audio, out: options.out, crf: options.crf, preset: options.preset }),
-    )
-
-    // Workers take the next frame number from a shared counter; the writer passes frames to
-    // ffmpeg strictly in order. A window bounds how far workers may run ahead of the writer.
-    const ahead = workers * 4
-    const slots = new Map<number, { promise: Promise<Buffer>; resolve: (b: Buffer) => void }>()
-    const slot = (i: number) => {
-      let s = slots.get(i)
-      if (!s) {
-        let resolve!: (b: Buffer) => void
-        const promise = new Promise<Buffer>((r) => (resolve = r))
-        s = { promise, resolve }
-        slots.set(i, s)
-      }
-      return s
-    }
-    let next = from
-    let written = from
-    let failed: unknown
-    const progressWaiters: (() => void)[] = []
-    const advanced = () => new Promise<void>((r) => progressWaiters.push(r))
-
-    const worker = async () => {
-      const page = await composition.openPage()
-      try {
-        while (!failed) {
-          const i = next++
-          if (i >= to) return
-          while (i - written >= ahead && !failed) await advanced()
-          slot(i).resolve(await page.capture(i, imageFormat, options.quality ?? 95))
-        }
-      } finally {
-        await page.close()
-      }
-    }
-
-    const writer = async () => {
-      const stdin = ffmpeg.child.stdin!
-      for (let i = from; i < to; i++) {
-        const image = await Promise.race([slot(i).promise, ffmpeg.done.then(() => Promise.reject(new Error('ffmpeg ended early')))])
-        slots.delete(i)
-        if (!stdin.write(image)) await once(stdin, 'drain')
-        written = i + 1
-        progressWaiters.splice(0).forEach((r) => r())
-        options.onProgress?.(written - from, total)
-      }
-      stdin.end()
-    }
-
-    const fail = (e: unknown) => {
-      failed ??= e
-      progressWaiters.splice(0).forEach((r) => r())
-      ffmpeg.child.kill('SIGKILL')
-      throw e
-    }
-    await Promise.all([...Array.from({ length: workers }, () => worker().catch(fail)), writer().catch(fail), ffmpeg.done.catch(fail)]).catch(
-      () => {
-        throw failed
-      },
-    )
+    const pages = await Promise.all(Array.from({ length: Math.max(1, Math.min(options.parallel ?? 4, total)) }, () => composition.openPage()))
+    const args = encodeArgs({ ...meta, frames: total, imageFormat: options.imageFormat ?? 'jpeg', audio, out: options.out, crf: options.crf, preset: options.preset })
+    await encodeFrames(pages, from, to, args, options)
     return { out: options.out, meta, frames: total, seconds: (performance.now() - started) / 1000 }
   } finally {
     await composition.close()

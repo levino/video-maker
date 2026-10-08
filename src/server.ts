@@ -4,7 +4,6 @@ import { createServer, type Server } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { extname, join, normalize, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { previewPage } from './preview-page.js'
 import { installRuntime, type RuntimeOptions } from './runtime.js'
 
 const types: Record<string, string> = {
@@ -34,7 +33,11 @@ const types: Record<string, string> = {
   '.srt': 'text/plain; charset=utf-8',
 }
 
-const kitDir = resolve(fileURLToPath(new URL('./kit/', import.meta.url)))
+const lib = (dir: string) => resolve(fileURLToPath(new URL(`./${dir}/`, import.meta.url)))
+const mounts: [string, string][] = [
+  ['/__video-maker/kit/', lib('kit')],
+  ['/__video-maker/player/', lib('player')],
+]
 
 export interface StaticServer {
   url: string
@@ -43,23 +46,29 @@ export interface StaticServer {
 
 export interface ServeOptions {
   root: string
-  /** Inject the runtime into HTML pages and serve the preview UI (for `video-maker preview`). */
-  preview?: { page: string; runtime: RuntimeOptions }
+  /** Generated responses by exact path. */
+  routes?: Record<string, { type: string; body: string | (() => string) }>
+  /** Inject the runtime into served HTML (needed when no Playwright init script runs, i.e. preview). */
+  inject?: RuntimeOptions
 }
 
-/**
- * Serves `root` on 127.0.0.1 with a random port, plus the kit under /__video-maker/kit/.
- */
+export const runtimeScript = (options: RuntimeOptions) => `<script>(${installRuntime.toString()})(${JSON.stringify(options)})</script>`
+
+/** Serves `root` on 127.0.0.1 with a random port, plus the kit and player under /__video-maker/. */
 export async function serve(options: ServeOptions): Promise<StaticServer> {
   const root = resolve(options.root)
   const server: Server = createServer(async (req, res) => {
     try {
       const path = decodeURIComponent(new URL(req.url ?? '/', 'http://x').pathname)
-      if (options.preview && path === '/__video-maker/preview') {
-        res.writeHead(200, { 'content-type': types['.html'], 'cache-control': 'no-store' })
-        return res.end(previewPage(options.preview.page))
+      const route = options.routes?.[path]
+      if (route) {
+        let body = typeof route.body === 'function' ? route.body() : route.body
+        if (options.inject && route.type.startsWith('text/html') && !path.endsWith('/preview')) body = inject(body, options.inject)
+        res.writeHead(200, { 'content-type': route.type, 'cache-control': 'no-store' })
+        return res.end(body)
       }
-      const [base, rel] = path.startsWith('/__video-maker/kit/') ? [kitDir, path.slice('/__video-maker/kit/'.length)] : [root, path]
+      const mount = mounts.find(([prefix]) => path.startsWith(prefix))
+      const [base, rel] = mount ? [mount[1], path.slice(mount[0].length)] : [root, path]
       let file = normalize(join(base, rel))
       if (file !== base && !file.startsWith(base + sep)) {
         res.writeHead(403)
@@ -75,12 +84,9 @@ export async function serve(options: ServeOptions): Promise<StaticServer> {
         return res.end('not found')
       }
       const type = types[extname(file).toLowerCase()] ?? 'application/octet-stream'
-      if (options.preview && type === types['.html']) {
-        const html = await readFile(file, 'utf8')
-        const script = `<script>(${installRuntime.toString()})(${JSON.stringify(options.preview.runtime)})</script>`
-        const injected = /<head[^>]*>/i.test(html) ? html.replace(/<head[^>]*>/i, (m) => m + script) : script + html
+      if (options.inject && type === types['.html']) {
         res.writeHead(200, { 'content-type': type, 'cache-control': 'no-store' })
-        return res.end(injected)
+        return res.end(inject(await readFile(file, 'utf8'), options.inject))
       }
       res.writeHead(200, { 'content-type': type, 'content-length': info.size, 'cache-control': 'no-store' })
       createReadStream(file).pipe(res)
@@ -95,4 +101,9 @@ export async function serve(options: ServeOptions): Promise<StaticServer> {
     url: `http://127.0.0.1:${port}`,
     close: () => new Promise((r) => server.close(() => r())),
   }
+}
+
+function inject(html: string, runtime: RuntimeOptions) {
+  const script = runtimeScript(runtime)
+  return /<head[^>]*>/i.test(html) ? html.replace(/<head[^>]*>/i, (m) => m + script) : script + html
 }

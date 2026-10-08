@@ -2,3 +2,4 @@ node_modules/
 dist/
 out/
 *.mp4
+.video-maker-cache/

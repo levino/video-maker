@@ -25,23 +25,76 @@ export function spreadCues(pieces: readonly string[], start: number, end: number
   })
 }
 
-/** Split text into caption-sized pieces at sentence ends, then at commas or spaces if too long. */
-export function splitText(text: string, maxLength = 60): string[] {
-  const sentences = text.match(/[^.!?]+[.!?]*\s*/g)?.map((s) => s.trim()).filter(Boolean) ?? []
-  const pieces: string[] = []
-  for (const sentence of sentences) {
-    let rest = sentence
-    while (rest.length > maxLength) {
-      const window = rest.slice(0, maxLength + 1)
-      let cut = window.lastIndexOf(', ')
-      cut = cut > maxLength / 3 ? cut + 1 : window.lastIndexOf(' ')
-      if (cut <= 0) cut = maxLength
-      pieces.push(rest.slice(0, cut).trim())
-      rest = rest.slice(cut).trim()
-    }
-    if (rest) pieces.push(rest)
+/**
+ * Split text into sentences: after . ! ? (optionally followed by a closing quote) when the next
+ * word starts with an uppercase letter, a digit or an opening quote.
+ */
+export function splitSentences(text: string): string[] {
+  const parts = text
+    .trim()
+    .split(/(?<=[.!?…][“”"»«']?)\s+(?=[„“"»«A-ZÄÖÜ0-9])/u)
+    .map((s) => s.trim())
+    .filter(Boolean)
+  // no sentence end after an abbreviation ("2,5 Mio. Euro", "z. B. Kassel") or an ordinal ("am 3. Mai")
+  const out: string[] = []
+  for (const part of parts) {
+    const previous = out.at(-1)
+    if (previous && (abbreviation.test(previous) || /(^|\s)\d{1,2}\.$/.test(previous))) out[out.length - 1] = `${previous} ${part}`
+    else out.push(part)
   }
-  return pieces
+  return out
+}
+
+const abbreviation = /(^|[\s(])(Mio|Mrd|Tsd|Nr|Dr|Prof|St|ca|bzw|vgl|z\. ?B|u\. ?a|d\. ?h|Abs|Art|Anm|etc|inkl|evtl|ggf|max|min|Mr|Mrs|Ms|vs|e\. ?g|i\. ?e)\.$/i
+
+/** Halve a too long piece at a punctuation mark near the middle, else at the space nearest to it. */
+function balance(piece: string, maxLength: number): string[] {
+  if (piece.length <= maxLength) return [piece]
+  const middle = piece.length / 2
+  const nearest = (re: RegExp, lo: number, hi: number) => {
+    let best = -1
+    for (const m of piece.matchAll(re)) {
+      const at = m.index + m[0].length - 1
+      if (at > piece.length * lo && at < piece.length * hi && (best < 0 || Math.abs(at - middle) < Math.abs(best - middle))) best = at
+    }
+    return best
+  }
+  let cut = nearest(/[,;:–—] /g, 0.25, 0.8)
+  if (cut < 0) cut = nearest(/ /g, 0, 1)
+  if (cut < 0) cut = maxLength
+  return [...balance(piece.slice(0, cut).trim(), maxLength), ...balance(piece.slice(cut).trim(), maxLength)]
+}
+
+/** Split text into caption-sized pieces: sentences, long ones halved at punctuation or spaces. */
+export function splitText(text: string, maxLength = 60): string[] {
+  return splitSentences(text).flatMap((s) => balance(s, maxLength))
+}
+
+/**
+ * Time caption pieces over a spoken passage of `duration` seconds: proportional to their length,
+ * each boundary moved to the nearest measured pause (seconds) within `snap` seconds.
+ */
+export function timeCues(pieces: readonly string[], duration: number, pauses: readonly number[] = [], snap = 1.5): Cue[] {
+  const weights = pieces.map((p) => p.length + 10)
+  const total = weights.reduce((a, b) => a + b, 0)
+  // estimated boundaries between pieces
+  const estimates: number[] = []
+  let sum = 0
+  for (let i = 0; i < pieces.length - 1; i++) estimates.push(((sum += weights[i]) / total) * duration)
+  // each pause belongs to the boundary whose estimate is closest; each boundary takes its closest pause
+  const chosen: (number | undefined)[] = estimates.map(() => undefined)
+  for (const p of pauses) {
+    if (p <= 0.3 || p >= duration - 0.3) continue
+    let nearest = -1
+    estimates.forEach((e, i) => {
+      if (Math.abs(p - e) <= snap && (nearest < 0 || Math.abs(p - e) < Math.abs(p - estimates[nearest]))) nearest = i
+    })
+    if (nearest >= 0 && (chosen[nearest] === undefined || Math.abs(p - estimates[nearest]) < Math.abs(chosen[nearest]! - estimates[nearest]))) chosen[nearest] = p
+  }
+  const bounds = [0]
+  estimates.forEach((e, i) => bounds.push(Math.min(Math.max(chosen[i] ?? e, bounds[i] + 0.4), duration)))
+  bounds.push(duration)
+  return pieces.map((text, i) => ({ start: bounds[i], end: bounds[i + 1], text }))
 }
 
 /** Parse SRT or WebVTT into cues with times in seconds. */

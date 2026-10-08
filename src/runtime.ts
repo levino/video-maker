@@ -156,16 +156,19 @@ export function installRuntime(options: RuntimeOptions): void {
     ready() {
       readyPromise ??= (async () => {
         if (document.readyState !== 'complete') await new Promise((r) => window.addEventListener('load', r, { once: true }))
+        const early = definition()
+        if (typeof early.ready === 'function') await early.ready()
+        else await early.ready
         const def = definition()
-        const pick = (key: string) => def[key] ?? (options.defaults as Record<string, number | undefined>)[key]
+        const pick = (key: string) => (options.defaults as Record<string, number | undefined>)[key] ?? def[key]
         const fps = Number(pick('fps'))
-        const frames = def.frames ?? (def.duration !== undefined ? Math.round(def.duration * fps) : undefined) ?? options.defaults.frames ?? Math.round((options.defaults.duration ?? NaN) * fps)
+        const d = options.defaults
+        const frames =
+          d.frames ?? (d.duration !== undefined ? Math.round(d.duration * fps) : undefined) ?? def.frames ?? (def.duration !== undefined ? Math.round(def.duration * fps) : NaN)
         meta = { width: Number(pick('width')), height: Number(pick('height')), fps, frames: Number(frames) }
         for (const [key, value] of Object.entries(meta)) {
           if (!(value > 0)) throw new Error(`video-maker: "${key}" is missing – define it in window.videoMaker or pass it as an option`)
         }
-        if (typeof def.ready === 'function') await def.ready()
-        else await def.ready
         await settle()
         return meta
       })()

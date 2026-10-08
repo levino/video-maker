@@ -1,0 +1,78 @@
+# Neutrales Beispiel: Titel, Zahlen, Balken, eigene Grafik, Untertitel, zwei Formate.
+# Rendern:  npx video-maker render examples/demo/video.yaml --out out/demo.mp4
+# Ton: eine Test-Spur erzeugen und die audio-Zeilen unten einkommentieren, z. B.
+#   "$(node -p "require('ffmpeg-static')")" -f lavfi -i sine=frequency=220:duration=16 examples/demo/ton.wav
+fps: 30
+formats:
+  landscape: { width: 1920, height: 1080 }
+  portrait: { width: 1080, height: 1920 }
+
+theme:
+  colors:
+    paper: "#f4f1ea"
+    ink: "#1d2430"
+    accent: "#d0562c"
+    calm: "#2f6f73"
+  background: paper
+  text: { font: "system-ui", color: ink, size: 56, lineHeight: 1.15 }
+  styles:
+    title: { size: 120, weight: 800, letterSpacing: -2 }
+    label: { size: 30, weight: 600, uppercase: true, letterSpacing: 3, color: calm }
+    big: { size: 160, weight: 800, color: accent }
+  captions: { size: 44, background: "rgba(29, 36, 48, 0.88)", bottom: 60 }
+
+defaults:
+  transition: { type: fade, duration: 0.4 }
+  enter: { type: slide-up, duration: 0.5 }
+
+# audio:
+#   - { file: ton.wav, volume: [[0, 0], [1, 0.3], ["end-1", 0.3], ["end", 0]] }
+
+scenes:
+  - id: title
+    duration: 4
+    script: Ein Beispiel für video-maker. Alles in dieser Datei ist Text.
+    layers:
+      - { type: text, text: "Beispielvideo", style: title, place: center, enter: pop }
+      - { type: text, text: "aus einer YAML-Datei", style: label, x: "50%", y: "62%", anchor: top, at: 0.6 }
+
+  - id: numbers
+    duration: 5
+    script: Zahlen zählen hoch. Balken wachsen.
+    layers:
+      - { type: text, text: "Zahlen", style: label, place: top-left }
+      - { type: counter, to: 1250, suffix: " km", style: big, x: "50%", y: "38%", anchor: center, start: 0.3, end: 2 }
+      - type: rect
+        color: calm
+        x: "10%"
+        y: "62%"
+        width: "48%"
+        height: 56
+        radius: 8
+        at: sentence:2
+        enter: { type: grow-x, duration: 1, ease: outCubic }
+        formats: { portrait: { width: "70%" } }
+      - type: rect
+        color: accent
+        x: "10%"
+        y: "70%"
+        width: "80%"
+        height: 56
+        radius: 8
+        at: sentence:2+0.3
+        enter: { type: grow-x, duration: 1, ease: outCubic }
+
+  - id: drawing
+    duration: 5
+    script: Eigene Grafik kommt aus einem kleinen Modul.
+    layers:
+      - { type: custom, module: zahnrad.js, props: { color: "#2f6f73", teeth: 12 }, x: "50%", y: "45%", width: 420, height: 420, anchor: center }
+      - { type: text, text: "custom-Ebene", style: label, place: top }
+
+  - id: end
+    duration: 3
+    background: ink
+    transition: { type: slide-up, duration: 0.6, overlap: true }
+    captions: false
+    layers:
+      - { type: text, text: "Ende", style: { preset: title, color: paper }, place: center, enter: { type: blur, duration: 0.8 } }
