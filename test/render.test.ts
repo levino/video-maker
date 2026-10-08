@@ -111,6 +111,17 @@ describe('render', () => {
     }
   }, 120_000)
 
+  it('places an audio track at its start time', async () => {
+    // 0.3 s tone, placed at 0.4 s: sound must begin at 0.4 s in the output
+    const tone = join(dir, 'kurz.wav')
+    const r = spawnSync(ffmpeg, ['-v', 'error', '-f', 'lavfi', '-i', 'sine=frequency=440:duration=0.3', tone])
+    if (r.status !== 0) throw new Error(String(r.stderr))
+    const out = join(dir, 'einsatz.mp4')
+    await render({ input: fixture, out, parallel: 1, audio: [{ file: tone, start: 0.4 }] })
+    const log = spawnSync(ffmpeg, ['-i', out, '-af', 'silencedetect=noise=-30dB:d=0.05', '-f', 'null', '-'], { encoding: 'utf8' }).stderr
+    expect(Number(/silence_end: ([\d.]+)/.exec(log)?.[1])).toBeCloseTo(0.4, 1)
+  }, 120_000)
+
   it('can render without audio', async () => {
     const out = join(dir, 'stumm.mp4')
     await render({ input: fixture, out, parallel: 1, imageFormat: 'png', range: [0, 4] })
